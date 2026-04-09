@@ -181,7 +181,7 @@ data class Memory @JvmOverloads constructor(
         loadEagerMemories().map { it.id }.toSet()
     }
 
-    private fun loadEagerMemories(): List<Proposition> {
+    private fun loadEagerMemories(): List<Proposition> = try {
         val base = baseQuery()
 
         val topicMemories = eagerTopicSearch?.let { limit ->
@@ -208,7 +208,10 @@ data class Memory @JvmOverloads constructor(
 
         // Merge all sources, deduplicating by ID, aboutMemories first (most contextual)
         val seen = mutableSetOf<String>()
-        return (aboutMemories + topicMemories + queryMemories).filter { seen.add(it.id) }
+        (aboutMemories + topicMemories + queryMemories).filter { seen.add(it.id) }
+    } catch (t: Throwable) {
+        logger.warn("Unable to perform vector search")
+        emptyList()
     }
 
     // -- LlmReference implementation --
