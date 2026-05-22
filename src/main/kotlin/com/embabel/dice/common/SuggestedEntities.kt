@@ -18,6 +18,8 @@ package com.embabel.dice.common
 import com.embabel.agent.rag.model.NamedEntityData
 import com.embabel.agent.rag.model.SimpleNamedEntityData
 import com.embabel.common.core.Sourced
+import com.embabel.common.core.types.ZeroToOne
+import com.embabel.dice.proposition.Suggestion
 import com.fasterxml.jackson.annotation.JsonIgnore
 import java.util.*
 
@@ -37,7 +39,15 @@ data class SuggestedEntity(
     val chunkId: String,
     val id: String? = null,
     val properties: Map<String, Any> = emptyMap(),
-) {
+    // Suggestion fields with defaults — existing call sites
+    // (SourceAnalyzer LLM extraction) keep compiling unchanged.
+    // `confidence = 1.0` matches the prior implicit "the LLM said
+    // it, accept it"; lower once extractors score themselves.
+    @get:JsonIgnore override val confidence: ZeroToOne = 1.0,
+    @get:JsonIgnore override val decay: ZeroToOne = 0.0,
+    @get:JsonIgnore override val importance: ZeroToOne = 0.5,
+    @get:JsonIgnore override val source: String = "source_analyzer",
+) : Suggestion {
     @JsonIgnore
     val suggestedEntity: NamedEntityData = SimpleNamedEntityData(
         id = id ?: UUID.randomUUID().toString(),
@@ -46,6 +56,16 @@ data class SuggestedEntity(
         labels = labels.map { it.substringAfterLast('.') }.toSet(),
         properties = properties,
     )
+
+    /**
+     * Grounding for a [SuggestedEntity] is the chunk it was extracted
+     * from — same convention as [SuggestedPropositions.chunkId]. A
+     * single-element list keeps the [com.embabel.dice.proposition.Suggestion]
+     * shape uniform with multi-chunk suggestions emitted by downstream
+     * extractors.
+     */
+    @get:JsonIgnore
+    override val grounding: List<String> get() = listOf(chunkId)
 }
 
 /**

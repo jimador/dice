@@ -78,14 +78,22 @@ data class SuggestedProposition(
     @param:JsonPropertyDescription("Entities mentioned in this statement. Don't include if you're not sure of any.")
     val mentions: List<SuggestedMention> = emptyList(),
     @param:JsonPropertyDescription("Certainty of this fact (0.0-1.0)")
-    val confidence: ZeroToOne,
+    override val confidence: ZeroToOne,
     @param:JsonPropertyDescription("How quickly this becomes stale (0.0=permanent, 1.0=very temporary)")
-    val decay: ZeroToOne = 0.0,
+    override val decay: ZeroToOne = 0.0,
     @param:JsonPropertyDescription("How much this fact matters to remember (0.0=trivial, 1.0=critical). Independent of confidence.")
-    val importance: ZeroToOne = 0.5,
+    override val importance: ZeroToOne = 0.5,
     @param:JsonPropertyDescription("Explanation for why this was extracted")
     val reasoning: String = "",
-) {
+    // Default-empty for back-compat: existing callers build a
+    // SuggestedProposition before grounding is known; conversion
+    // to Proposition takes grounding as a parameter (see `toProposition`).
+    override val grounding: List<String> = emptyList(),
+    // Default `"propose_facts"` keeps the existing LLM-extraction call
+    // sites — the sole producer of SuggestedProposition today —
+    // source-tagged without code changes elsewhere.
+    override val source: String = "propose_facts",
+) : Suggestion {
     /**
      * Convert to a Proposition with the given chunk grounding.
      * Entity resolution happens separately.
