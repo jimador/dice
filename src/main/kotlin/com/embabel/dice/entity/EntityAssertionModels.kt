@@ -37,12 +37,21 @@ data class EntityAssertionRequest(
  * @param labels Type labels for the entity, e.g. ["Person", "Engineer"]
  * @param description Optional description/summary of the entity
  * @param properties Additional properties to store on the entity node
+ * @param id Optional caller-supplied stable id. When the resolver
+ *  determines this assertion is a new entity (no existing match), the
+ *  created row will use this id verbatim instead of a freshly-minted
+ *  UUID. Lets callers anchor entities to a deterministic id scheme
+ *  (e.g. `email:<threadId>`, `dom:<domain>`) so downstream references
+ *  (proposition grounding, external links) hit the same row. Has no
+ *  effect when the assertion resolves to an existing entity — the
+ *  existing id wins. Null = resolver generates a UUID.
  */
-data class EntityAssertion(
+data class EntityAssertion @JvmOverloads constructor(
     val name: String,
     val labels: List<String> = emptyList(),
     val description: String? = null,
     val properties: Map<String, Any> = emptyMap(),
+    val id: String? = null,
 )
 
 /**
@@ -96,10 +105,13 @@ data class EntityResolutionResult(
 enum class ResolutionOutcome {
     /** A new entity was created in the graph */
     NEW,
+
     /** Matched an existing entity; labels/properties were merged */
     EXISTING,
+
     /** Matched a reference-only entity; not modified */
     REFERENCE_ONLY,
+
     /** Entity creation was vetoed by the data dictionary */
     VETOED,
 }

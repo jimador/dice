@@ -86,6 +86,111 @@ class EntityResolutionServiceTest {
         }
 
         @Test
+        fun `EntityAssertion supplied id is honoured on the new-entity path`() {
+            // Caller supplies a deterministic id (e.g. `email:abc`,
+            // `dom:embabel.com`) on the assertion. When the resolver
+            // decides this is a new entity, the row should carry that
+            // id exactly — not a freshly-minted UUID.
+            //
+            // The service builds the SuggestedEntity from the
+            // assertion; the resolver wraps it in NewEntity whose
+            // `recommended` defaults to `suggested.suggestedEntity`,
+            // whose id falls back to a UUID only when the supplied id
+            // is null. Capture the saved row and assert its id.
+            val capturedSaves = mutableListOf<com.embabel.agent.rag.model.NamedEntityData>()
+            every { repository.save(capture(capturedSaves)) } answers { capturedSaves.last() }
+
+            // Drive the resolver to invoke NewEntity using whatever
+            // SuggestedEntity the service constructs from the
+            // assertion. Capture the SuggestedEntity so we can
+            // confirm the id was forwarded.
+            val capturedSuggested = slot<SuggestedEntities>()
+            every { entityResolver.resolve(capture(capturedSuggested), any()) } answers {
+                val first = capturedSuggested.captured.suggestedEntities.first()
+                Resolutions(
+                    chunkIds = setOf(EntityResolutionService.ASSERTION_CHUNK_ID),
+                    resolutions = listOf(NewEntity(first)),
+                )
+            }
+
+            service.resolve(
+                EntityAssertionRequest(
+                    entities = listOf(
+                        EntityAssertion(
+                            name = "rod@embabel.com",
+                            labels = listOf("EmailAddress"),
+                            id = "email:rod@embabel.com",
+                        ),
+                    ),
+                ),
+            )
+
+            assertEquals("email:rod@embabel.com", capturedSuggested.captured.suggestedEntities.first().id)
+            assertEquals(1, capturedSaves.size, "exactly one row saved")
+            assertEquals(
+                "email:rod@embabel.com",
+                capturedSaves.first().id,
+                "saved row must use the caller-supplied id, not a UUID",
+            )
+        }
+
+        @Test
+        fun `EntityAssertion without id falls back to UUID on new-entity path`() {
+            // The default — backward compat — null id means UUID.
+            val capturedSaves = mutableListOf<com.embabel.agent.rag.model.NamedEntityData>()
+            every { repository.save(capture(capturedSaves)) } answers { capturedSaves.last() }
+            val capturedSuggested = slot<SuggestedEntities>()
+            every { entityResolver.resolve(capture(capturedSuggested), any()) } answers {
+                Resolutions(
+                    chunkIds = setOf(EntityResolutionService.ASSERTION_CHUNK_ID),
+                    resolutions = listOf(NewEntity(capturedSuggested.captured.suggestedEntities.first())),
+                )
+            }
+
+            service.resolve(
+                EntityAssertionRequest(
+                    entities = listOf(EntityAssertion(name = "Alice", labels = listOf("Person"))),
+                ),
+            )
+
+            val savedId = capturedSaves.first().id
+            assertEquals(36, savedId.length, "UUID is 36 chars including dashes")
+            assertNotEquals("email:rod@embabel.com", savedId)
+        }
+
+        @Test
+        fun `EntityAssertion supplied id is ignored when the resolver matches an existing entity`() {
+            // Existing entity wins: the id field on the assertion is a
+            // hint for new-entity creation only. Existing rows keep
+            // their stored id.
+            every { repository.update(any()) } returns existingEntityData("alice-123", "Alice", setOf("Person"))
+            val capturedSuggested = slot<SuggestedEntities>()
+            every { entityResolver.resolve(capture(capturedSuggested), any()) } answers {
+                val first = capturedSuggested.captured.suggestedEntities.first()
+                Resolutions(
+                    chunkIds = setOf(EntityResolutionService.ASSERTION_CHUNK_ID),
+                    resolutions = listOf(ExistingEntity(first, existingEntityData("alice-123", "Alice", setOf("Person")))),
+                )
+            }
+
+            val result = service.resolve(
+                EntityAssertionRequest(
+                    entities = listOf(
+                        EntityAssertion(name = "Alice", labels = listOf("Person"), id = "i-want-this-id"),
+                    ),
+                ),
+            )
+
+            assertEquals(1, result.resolutions.size)
+            assertEquals(ResolutionOutcome.EXISTING, result.resolutions[0].resolution)
+            assertEquals(
+                "alice-123",
+                result.resolutions[0].entityId,
+                "existing id wins; caller-supplied id is ignored",
+            )
+        }
+
+        @Test
         fun `existing entity is updated in repository`() {
             val suggested = suggestedEntity("Alice", listOf("Engineer"))
             val existing = existingEntityData("alice-123", "Alice", setOf("Person"))

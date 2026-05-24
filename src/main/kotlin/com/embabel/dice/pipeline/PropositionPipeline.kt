@@ -193,7 +193,15 @@ class PropositionPipeline private constructor(
                 logger.debug("Content already processed (hash: {})", hash.take(8))
                 return null
             }
-            val chunk = Chunk.create(text = text, parentId = sourceId)
+            // Use sourceId AS the chunk id, not just parentId. This
+            // makes proposition.grounding carry the caller's stable
+            // sourceId (e.g. `email:<threadId>`, `file:<name>`,
+            // `url:<href>`) instead of an opaque UUID. Downstream
+            // wiring (GroundingWiringService) can then resolve that id
+            // directly to a stored entity for one-hop provenance.
+            // Backward-compatible: callers that pass UUID-shaped
+            // sourceIds get UUID chunk ids exactly as before.
+            val chunk = Chunk.create(text = text, parentId = sourceId, id = sourceId)
             val result = processChunk(chunk, context)
             historyStore.recordProcessed(
                 ProcessedChunkRecord(
@@ -206,7 +214,10 @@ class PropositionPipeline private constructor(
             )
             return result
         }
-        val chunk = Chunk.create(text = text, parentId = sourceId)
+        // Same id-as-sourceId convention as the history-store branch:
+        // proposition.grounding carries the caller's stable sourceId so
+        // GroundingWiringService can resolve it to a source entity.
+        val chunk = Chunk.create(text = text, parentId = sourceId, id = sourceId)
         return processChunk(chunk, context)
     }
 

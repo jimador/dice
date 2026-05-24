@@ -59,7 +59,11 @@ class EntityResolutionService(
         logger.info("Resolving {} entities with {} relationships",
             request.entities.size, request.relationships.size)
 
-        // 1. Convert EntityAssertions → SuggestedEntities
+        // 1. Convert EntityAssertions → SuggestedEntities. Forwards
+        // the caller-supplied `id` (null when absent) so the resolver
+        // can honour deterministic ids on the new-entity path —
+        // existing matches still win, the supplied id only takes
+        // effect when a fresh row is created.
         val suggestedEntities = SuggestedEntities(
             suggestedEntities = request.entities.map { assertion ->
                 SuggestedEntity(
@@ -67,6 +71,7 @@ class EntityResolutionService(
                     name = assertion.name,
                     summary = assertion.description ?: "",
                     chunkId = ASSERTION_CHUNK_ID,
+                    id = assertion.id,
                     properties = assertion.properties,
                 )
             },

@@ -55,7 +55,7 @@ import java.util.function.Function
  * @param promptVariablesProvider optional function to add extra template variables
  *        to the [SourceAnalysisContext] built for each extraction.
  */
-open class IncrementalPropositionExtraction(
+open class IncrementalPropositionExtraction @JvmOverloads constructor(
     private val propositionPipeline: PropositionPipeline,
     chunkHistoryStore: ChunkHistoryStore,
     private val dataDictionary: DataDictionary,
@@ -80,6 +80,16 @@ open class IncrementalPropositionExtraction(
      * into edges because there is no OBJECT mention to link to.
      */
     private val extraKnownEntitiesProvider: (NamedEntity, String) -> List<NamedEntity> = { _, _ -> emptyList() },
+    /**
+     * Optional grounding wiring — if non-null, runs after each
+     * `persistAndProject` and materialises
+     * `(:Proposition)-[:GROUNDED_IN]->(:<entity>)` edges for any
+     * grounding id that resolves to a stored entity. Defaults to no-op
+     * for backward compatibility; existing consumers see no behaviour
+     * change. Pass a [com.embabel.dice.projection.grounding.GroundingWiringService]
+     * to opt in.
+     */
+    private val groundingWiringService: com.embabel.dice.projection.grounding.GroundingWiringService? = null,
 ) {
     private val analyzer: IncrementalAnalyzer<Message, ChunkPropositionResult> =
         PropositionIncrementalAnalyzer(
@@ -283,6 +293,12 @@ open class IncrementalPropositionExtraction(
                 persistenceResult.persistedCount,
             )
         }
+        // Optional grounding pass — turns the `grounding: List<String>`
+        // on each freshly-saved proposition into actual
+        // `(:Proposition)-[:GROUNDED_IN]->(:<entity>)` edges when the
+        // ids resolve to stored entities. No-op when no wiring service
+        // was supplied (default for backward compatibility).
+        groundingWiringService?.wire(propsToSave)
     }
 
     private fun logAllPropositions(contextId: String) {
