@@ -1655,22 +1655,23 @@ the full memory store remains searchable on demand.
 
 #### Search Parameters
 
-The LLM calls Memory with optional JSON parameters. The routing logic is:
+The tool surface is deliberately minimal: one freeform `query` plus an optional `limit`.
 
-- **`topic`**: Vector similarity search (e.g., `{"topic": "hobbies"}`)
-- **`keyword`**: Case-insensitive text match (e.g., `{"keyword": "guitar"}`)
-- **`type`**: Filter by knowledge type (e.g., `{"type": "semantic"}`)
-- **No parameters** or `{}`: Returns all memories ordered by confidence
+- **`query`**: A natural-language description of what to recall (e.g. `{"query": "the user's hobbies"}`,
+  `{"query": "where does the user live"}`, `{"query": "Stripe"}`). Memory runs a **hybrid** retrieval —
+  a vector-similarity probe AND a keyword (case-insensitive substring) probe over the same scoped
+  propositions — then unions the hits, tagging each line with the probe(s) that found it
+  (`[vector]`, `[keyword]`, `[vector,keyword]`). Vector carries question-shaped queries; keyword adds
+  precision for exact terms, names, and phrases.
+- **`limit`**: Maximum results (optional).
+- **No parameters** or `{}`: Returns all memories ordered by confidence.
 
-All search modes support optional `type` filtering:
-- `semantic`: Facts about entities (e.g., "Alice works at Acme")
-- `episodic`: Events that happened (e.g., "Alice met Bob yesterday")
-- `procedural`: Preferences and habits (e.g., "Alice prefers morning meetings")
-- `working`: Current session context
+There is no predicate / subject / object / type parameter surface — the agent asks in natural
+language and, if the first query is unconvincing, simply asks again with different wording. The
+empty-result message nudges it to do exactly that.
 
-All search modes also support an optional `level` parameter to filter by abstraction level:
-- `0`: Raw observations only
-- `1+`: Summaries and abstractions only
+Fusion scoring (RRF) and graph-distance reranking are intentionally **not** implemented yet:
+vector hits keep their similarity order, keyword-only hits follow by confidence.
 
 #### Scoping
 

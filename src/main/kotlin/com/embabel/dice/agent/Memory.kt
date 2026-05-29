@@ -21,7 +21,6 @@ import com.embabel.agent.api.tool.Tool
 import com.embabel.agent.core.ContextId
 import com.embabel.common.core.types.TextSimilaritySearchRequest
 import com.embabel.dice.agent.Memory.Companion.DEFAULT_LIMIT
-import com.embabel.dice.common.KnowledgeType
 import com.embabel.dice.projection.memory.MemoryProjector
 import com.embabel.dice.projection.memory.support.DefaultMemoryProjector
 import com.embabel.dice.proposition.Proposition
@@ -34,11 +33,20 @@ import java.util.function.UnaryOperator
 /**
  * Tool providing agent memory search within a context.
  *
- * A single tool that the LLM calls with optional parameters to search memories:
- * - **topic**: Vector similarity search (e.g., `{"topic": "hobbies"}`)
- * - **keyword**: Case-insensitive text match (e.g., `{"keyword": "guitar"}`)
- * - **type**: Filter by knowledge type (semantic, episodic, procedural, working)
- * - No parameters or **listAll**: Returns all memories ordered by confidence
+ * A single agentic tool: the LLM passes a freeform natural-language
+ * `query` and Memory runs a **hybrid** retrieval — a vector-similarity
+ * probe AND a keyword (substring) probe over the same scoped
+ * propositions — then unions the hits, tagging each with the probe(s)
+ * that found it (`[vector]`, `[keyword]`, `[vector,keyword]`). Vector
+ * carries question-shaped queries; keyword adds precision for exact
+ * terms, names and phrases. There is no predicate / subject / object
+ * parameter surface — the LLM asks in natural language and, if the
+ * first query is unconvincing, simply asks again with different
+ * wording. Calling with no `query` lists all memories by confidence.
+ *
+ * Fusion scoring (RRF) and graph-distance reranking are deliberately
+ * NOT implemented yet — vector hits keep similarity order, keyword-only
+ * hits follow by confidence.
  *
  * The context is baked in at construction time, ensuring the LLM
  * can only access memories within the authorized context.
@@ -165,15 +173,6 @@ data class Memory @JvmOverloads constructor(
     }
 
     /**
-     * Build a query with optional level filtering from call parameters.
-     */
-    private fun queryWithLevel(params: Map<String, Any?>): PropositionQuery {
-        val query = baseQuery()
-        val level = (params["level"] as? Number)?.toInt() ?: return query
-        return query.withMinLevel(level).withMaxLevel(level)
-    }
-
-    /**
      * IDs of propositions that were eagerly loaded into the description.
      * Used to deduplicate results from subsequent tool calls.
      */
@@ -257,7 +256,9 @@ data class Memory @JvmOverloads constructor(
                 1 -> "1 memory available."
                 else -> "$memoryCount memories available."
             }
-            return "Search memories about $topic. $status Use when: $useWhen"
+            return "Search memories about $topic via hybrid semantic + keyword retrieval. " +
+                "$status Use when: $useWhen. If a query comes back empty or unconvincing, " +
+                "retry with different wording or a broader query before concluding nothing is known."
         }
 
     /**
@@ -351,193 +352,108 @@ data class Memory @JvmOverloads constructor(
             name = NAME,
             description = toolDescription,
             inputSchema = Tool.InputSchema.of(
-                Tool.Parameter.string("topic", "Search memories by topic (semantic similarity)", required = false),
                 Tool.Parameter.string(
-                    "keyword",
-                    "Search memories containing this keyword (exact text match)",
-                    required = false
-                ),
-                Tool.Parameter.string(
-                    "type",
-                    "Filter by knowledge type",
+                    "query",
+                    "What to recall, in natural language (e.g. \"where does the user live\", " +
+                        "\"the user's hobbies\", \"Stripe\"). Runs a hybrid semantic + keyword " +
+                        "search over stored memories. If the first query returns nothing useful, " +
+                        "try again with different wording or a broader query before giving up. " +
+                        "Omit to list all memories by confidence.",
                     required = false,
-                    enumValues = KNOWLEDGE_TYPE_VALUES,
                 ),
                 Tool.Parameter.integer("limit", "Maximum number of results", required = false),
-                Tool.Parameter.integer(
-                    "level",
-                    "Abstraction level: 0 for raw details, 1+ for summaries",
-                    required = false
-                ),
             ),
         )
     }
 
     override fun call(input: String): Tool.Result {
         val params = parseInput(input)
-        return when {
-            params.containsKey("keyword") -> searchByKeyword(params)
-            params.containsKey("topic") -> searchByTopic(params)
-            params.containsKey("type") -> searchByType(params)
-            else -> listAll(params)
-        }
+        // `query` is the canonical freeform parameter; accept `topic`
+        // as a silent fallback so any caller still passing the old
+        // name keeps working.
+        val query = (params["query"] as? String ?: params["topic"] as? String)
+            ?.trim()?.takeIf { it.isNotBlank() }
+        val limit = (params["limit"] as? Number)?.toInt() ?: defaultLimit
+        return if (query == null) listAll(limit.coerceAtLeast(defaultLimit)) else hybridSearch(query, limit)
     }
 
-    private fun listAll(params: Map<String, Any?>): Tool.Result {
-        val typeFilter = parseKnowledgeType(params["type"] as? String)
-        val limit = (params["limit"] as? Number)?.toInt() ?: 50
+    /**
+     * Hybrid retrieval over the scoped propositions: a vector
+     * similarity probe AND a keyword (case-insensitive substring)
+     * probe, unioned. Vector carries question-shaped queries; keyword
+     * adds precision for exact terms / names / phrases. Each line is
+     * tagged with the probe(s) that found it so the LLM can tell a
+     * semantic neighbour from an exact match.
+     *
+     * No fusion scoring: vector hits keep their similarity order,
+     * keyword-only hits follow in confidence order. Eager-loaded
+     * propositions (already in the system prompt) are removed so the
+     * LLM only sees new information.
+     */
+    private fun hybridSearch(query: String, limit: Int): Tool.Result {
+        val base = baseQuery()
 
-        val results = repository.query(
-            queryWithLevel(params)
-                .orderedByEffectiveConfidence()
-                .withLimit(if (typeFilter != null) limit * 3 else limit)
-        )
-
-        val deduped = results.filter { it.id !in eagerPropositionIds }
-
-        val filtered = if (typeFilter != null) {
-            val projection = projector.project(deduped)
-            projection[typeFilter].take(limit)
-        } else {
-            deduped.take(limit)
+        val vectorHits = try {
+            repository.findSimilarWithScores(
+                TextSimilaritySearchRequest(query = query, similarityThreshold = 0.0, topK = limit),
+                base,
+            ).map { it.match }
+        } catch (t: Throwable) {
+            logger.warn("vector probe failed for '{}': {}", query, t.message)
+            emptyList()
         }
 
-        if (filtered.isEmpty()) {
-            val typeDesc = typeFilter?.let { " (${it.name.lowercase()})" } ?: ""
-            return if (eagerPropositionIds.isNotEmpty()) {
-                Tool.Result.text("No additional memories found$typeDesc beyond those already provided.")
-            } else {
-                Tool.Result.text("No memories stored yet$typeDesc.")
-            }
+        val keywordHits = repository.query(base.orderedByEffectiveConfidence().withLimit(limit * 10))
+            .filter { it.text.contains(query, ignoreCase = true) }
+            .take(limit)
+
+        // Union, preserving vector order first (similarity), then
+        // keyword-only hits (confidence). A proposition found by both
+        // carries both tags.
+        val ordered = LinkedHashMap<String, ProbeHit>()
+        vectorHits.forEach { p -> ordered.getOrPut(p.id) { ProbeHit(p, mutableSetOf()) }.sources += "vector" }
+        keywordHits.forEach { p -> ordered.getOrPut(p.id) { ProbeHit(p, mutableSetOf()) }.sources += "keyword" }
+
+        val hits = ordered.values
+            .filter { it.prop.id !in eagerPropositionIds }
+            .take(limit)
+
+        if (hits.isEmpty()) {
+            val total = repository.query(base).size
+            val tail = if (total > 0) " — $total memories are stored about $topic." else "."
+            return Tool.Result.text(
+                "No memories matched '$query'. Try rephrasing or a broader query$tail"
+            )
         }
 
         val text = buildString {
-            val typeDesc = typeFilter?.let { " (${it.name.lowercase()})" } ?: ""
-            appendLine("All memories$typeDesc (${filtered.size}):")
-            filtered.forEach { prop ->
-                appendLine("- ${prop.text}")
+            appendLine("Memories about '$query' (${hits.size}):")
+            hits.forEach { hit ->
+                appendLine("- [${hit.sources.sorted().joinToString(",")}] ${hit.prop.text}")
             }
         }.trimEnd()
-
         return Tool.Result.text(text)
     }
 
-    private fun searchByTopic(params: Map<String, Any?>): Tool.Result {
-        val topic = params["topic"] as? String ?: return Tool.Result.error("Missing 'topic' parameter")
-        val typeFilter = parseKnowledgeType(params["type"] as? String)
-        val limit = (params["limit"] as? Number)?.toInt() ?: defaultLimit
+    private data class ProbeHit(val prop: Proposition, val sources: MutableSet<String>)
 
-        val results = repository.findSimilarWithScores(
-            TextSimilaritySearchRequest(
-                query = topic,
-                similarityThreshold = 0.0,
-                topK = if (typeFilter != null) limit * 3 else limit,
-            ),
-            queryWithLevel(params)
-        )
-
-        val deduped = results.filter { it.match.id !in eagerPropositionIds }
-
-        val filtered = if (typeFilter != null) {
-            val projection = projector.project(deduped.map { it.match })
-            projection[typeFilter].take(limit)
-        } else {
-            deduped.take(limit).map { it.match }
-        }
-
-        if (filtered.isEmpty()) {
-            val typeDesc = typeFilter?.let { " (${it.name.lowercase()})" } ?: ""
-            return if (eagerPropositionIds.isNotEmpty()) {
-                Tool.Result.text("No additional memories found about '$topic'$typeDesc beyond those already provided.")
-            } else {
-                Tool.Result.text("No memories found about '$topic'$typeDesc.")
-            }
-        }
-
-        val text = buildString {
-            val typeDesc = typeFilter?.let { " (${it.name.lowercase()})" } ?: ""
-            appendLine("Memories about '$topic'$typeDesc:")
-            filtered.forEach { prop ->
-                appendLine("- ${prop.text}")
-            }
-        }.trimEnd()
-
-        return Tool.Result.text(text)
-    }
-
-    private fun searchByKeyword(params: Map<String, Any?>): Tool.Result {
-        val keyword = params["keyword"] as? String
-            ?: return Tool.Result.error("Missing 'keyword' parameter")
-        val limit = (params["limit"] as? Number)?.toInt() ?: defaultLimit
-
-        val allProps = repository.query(
-            queryWithLevel(params)
-                .orderedByEffectiveConfidence()
-                .withLimit(limit * 5)
-        )
-
-        val matches = allProps
-            .filter { it.text.contains(keyword, ignoreCase = true) }
+    private fun listAll(limit: Int): Tool.Result {
+        val results = repository.query(baseQuery().orderedByEffectiveConfidence().withLimit(limit))
             .filter { it.id !in eagerPropositionIds }
             .take(limit)
 
-        if (matches.isEmpty()) {
-            return Tool.Result.text("No memories found containing '$keyword'.")
+        if (results.isEmpty()) {
+            return Tool.Result.text(
+                if (eagerPropositionIds.isNotEmpty()) "No additional memories beyond those already provided."
+                else "No memories stored yet."
+            )
         }
 
         val text = buildString {
-            appendLine("Memories containing '$keyword' (${matches.size}):")
-            matches.forEach { prop ->
-                appendLine("- ${prop.text}")
-            }
+            appendLine("All memories (${results.size}):")
+            results.forEach { prop -> appendLine("- ${prop.text}") }
         }.trimEnd()
-
         return Tool.Result.text(text)
-    }
-
-    private fun searchByType(params: Map<String, Any?>): Tool.Result {
-        val typeStr = params["type"] as? String ?: return Tool.Result.error("Missing 'type' parameter")
-        val typeFilter = parseKnowledgeType(typeStr)
-            ?: return Tool.Result.error("Invalid type '$typeStr'. Use: semantic, episodic, procedural, or working")
-        val limit = (params["limit"] as? Number)?.toInt() ?: defaultLimit
-
-        val results = repository.query(
-            queryWithLevel(params)
-                .orderedByEffectiveConfidence()
-                .withLimit(limit * 3)
-        )
-
-        val projection = projector.project(results)
-        val filtered = projection[typeFilter].take(limit)
-
-        if (filtered.isEmpty()) {
-            return Tool.Result.text("No ${typeFilter.name.lowercase()} memories found.")
-        }
-
-        val typeLabel = when (typeFilter) {
-            KnowledgeType.SEMANTIC -> "Facts"
-            KnowledgeType.EPISODIC -> "Events"
-            KnowledgeType.PROCEDURAL -> "Preferences"
-            KnowledgeType.WORKING -> "Session context"
-        }
-
-        val text = buildString {
-            appendLine("$typeLabel (${filtered.size}):")
-            filtered.forEach { prop ->
-                appendLine("- ${prop.text}")
-            }
-        }.trimEnd()
-
-        return Tool.Result.text(text)
-    }
-
-    private fun parseKnowledgeType(value: String?): KnowledgeType? {
-        if (value.isNullOrBlank()) return null
-        return try {
-            KnowledgeType.valueOf(value.uppercase())
-        } catch (e: IllegalArgumentException) {
-            null
-        }
     }
 
     private fun parseInput(input: String): Map<String, Any?> {
@@ -559,8 +475,6 @@ data class Memory @JvmOverloads constructor(
 
         /** Default result limit */
         const val DEFAULT_LIMIT = 10
-
-        private val KNOWLEDGE_TYPE_VALUES = KnowledgeType.entries.map { it.name.lowercase() }
 
         private val objectMapper = jacksonObjectMapper()
 
