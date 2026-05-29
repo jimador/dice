@@ -20,8 +20,8 @@ import com.embabel.agent.api.tool.Tool
 import com.embabel.agent.core.ContextId
 import com.embabel.common.core.types.SimilarityResult
 import com.embabel.common.core.types.TextSimilaritySearchRequest
-import com.embabel.dice.projection.memory.MemoryProjection
 import com.embabel.dice.projection.memory.MemoryProjector
+import com.embabel.dice.proposition.EntityMention
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionRepository
@@ -241,10 +241,10 @@ class MemoryTest {
     }
 
     @Nested
-    inner class SearchByTopicTests {
+    inner class HybridSearchTests {
 
         @Test
-        fun `returns formatted results`() {
+        fun `returns vector hits tagged by probe`() {
             val props = listOf(
                 createProposition("User likes jazz music"),
                 createProposition("User prefers acoustic instruments"),
@@ -252,60 +252,82 @@ class MemoryTest {
             every {
                 repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
             } returns props.map { SimilarityResult(it, 0.9) }
+            every { repository.query(any()) } returns emptyList()
 
             val memory = Memory.forContext(contextId)
                 .withRepository(repository)
 
-            val result = memory.call("""{"topic": "jazz"}""")
-            val text = (result as com.embabel.agent.api.tool.Tool.Result.Text).content
+            val result = memory.call("""{"query": "jazz"}""")
+            val text = (result as Tool.Result.Text).content
 
-            assertTrue(text.contains("jazz"))
-            assertTrue(text.contains("User likes jazz music"))
-            assertTrue(text.contains("User prefers acoustic instruments"))
+            assertTrue(text.contains("jazz"), text)
+            assertTrue(text.contains("User likes jazz music"), text)
+            assertTrue(text.contains("User prefers acoustic instruments"), text)
+            assertTrue(text.contains("[vector]"), text)
         }
 
         @Test
-        fun `returns empty message when no results`() {
-            every {
-                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
-            } returns emptyList()
-
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-
-            val result = memory.call("""{"topic": "unknown topic"}""")
-            val text = (result as com.embabel.agent.api.tool.Tool.Result.Text).content
-
-            assertTrue(text.contains("No memories found"))
-        }
-
-        @Test
-        fun `filters by type when specified`() {
-            val props = listOf(
-                createProposition("User likes jazz music"),
-                createProposition("User met Bob yesterday"),
-                createProposition("User prefers morning meetings"),
-            )
+        fun `still accepts the legacy topic parameter`() {
+            val props = listOf(createProposition("User likes jazz music"))
             every {
                 repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
             } returns props.map { SimilarityResult(it, 0.9) }
+            every { repository.query(any()) } returns emptyList()
 
-            every { projector.project(any()) } returns MemoryProjection(
-                procedural = listOf(props[0], props[2]),
-                episodic = listOf(props[1]),
+            val memory = Memory.forContext(contextId).withRepository(repository)
+
+            val result = memory.call("""{"topic": "jazz"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("User likes jazz music"), text)
+        }
+
+        @Test
+        fun `keyword-only hit is tagged keyword and merged in`() {
+            // Vector finds nothing; keyword substring finds a proposition.
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns emptyList()
+            every { repository.query(any()) } returns listOf(
+                createProposition("User bought a guitar amp"),
+                createProposition("Unrelated fact about coffee"),
             )
 
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-                .withProjector(projector)
+            val memory = Memory.forContext(contextId).withRepository(repository)
 
-            val result = memory.call("""{"topic": "user", "type": "procedural"}""")
-            val text = (result as com.embabel.agent.api.tool.Tool.Result.Text).content
+            val result = memory.call("""{"query": "guitar"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("[keyword] User bought a guitar amp"), text)
+            assertFalse(text.contains("coffee"), text)
+        }
 
-            assertTrue(text.contains("procedural"))
-            assertTrue(text.contains("User likes jazz music"))
-            assertTrue(text.contains("User prefers morning meetings"))
-            assertFalse(text.contains("User met Bob yesterday"))
+        @Test
+        fun `proposition found by both probes carries both tags`() {
+            val both = createProposition("User loves guitar")
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns listOf(SimilarityResult(both, 0.95))
+            every { repository.query(any()) } returns listOf(both)
+
+            val memory = Memory.forContext(contextId).withRepository(repository)
+
+            val result = memory.call("""{"query": "guitar"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("[keyword,vector] User loves guitar"), text)
+        }
+
+        @Test
+        fun `empty result nudges the LLM to retry`() {
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns emptyList()
+            every { repository.query(any()) } returns emptyList()
+
+            val memory = Memory.forContext(contextId).withRepository(repository)
+
+            val result = memory.call("""{"query": "unknown topic"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("No memories matched"), text)
+            assertTrue(text.contains("Try rephrasing"), text)
         }
 
         @Test
@@ -316,99 +338,113 @@ class MemoryTest {
             every {
                 repository.findSimilarWithScores(capture(requestSlot), capture(querySlot))
             } returns emptyList()
+            every { repository.query(any()) } returns emptyList()
 
             val memory = Memory.forContext(contextId)
                 .withRepository(repository)
                 .withMinConfidence(0.7)
 
-            memory.call("""{"topic": "jazz", "limit": 5}""")
+            memory.call("""{"query": "jazz", "limit": 5}""")
 
             assertEquals("jazz", requestSlot.captured.query)
             assertEquals(5, requestSlot.captured.topK)
             assertEquals(contextId, querySlot.captured.contextId)
             assertEquals(0.7, querySlot.captured.minEffectiveConfidence)
         }
-    }
-
-    @Nested
-    inner class SearchByTypeTests {
 
         @Test
-        fun `returns facts for semantic type`() {
-            val props = listOf(
-                createProposition("Alice works at Acme", confidence = 0.9, decay = 0.1),
-                createProposition("User met Bob", confidence = 0.8, decay = 0.6),
-                createProposition("Bob is a developer", confidence = 0.85, decay = 0.1),
-            )
-            every { repository.query(any()) } returns props
-
-            every { projector.project(any()) } returns MemoryProjection(
-                semantic = listOf(props[0], props[2]),
-                episodic = listOf(props[1]),
+        fun `keyword probe matches by term overlap not whole-string substring`() {
+            // A phrase query never substring-matches a proposition, but
+            // its salient token ("Canva") does.
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns emptyList()
+            every { repository.query(any()) } returns listOf(
+                createProposition("SimTheory was recently acquired by Canva"),
+                createProposition("User prefers tea over juice"),
             )
 
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-                .withProjector(projector)
+            val memory = Memory.forContext(contextId).withRepository(repository)
 
-            val result = memory.call("""{"type": "semantic"}""")
-            val text = (result as com.embabel.agent.api.tool.Tool.Result.Text).content
-
-            assertTrue(text.contains("Facts"))
-            assertTrue(text.contains("Alice works at Acme"))
-            assertTrue(text.contains("Bob is a developer"))
-            assertFalse(text.contains("User met Bob"))
+            val result = memory.call("""{"query": "what evidence shows interest in Canva"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("[keyword] SimTheory was recently acquired by Canva"), text)
+            assertFalse(text.contains("tea over juice"), text)
         }
 
         @Test
-        fun `returns preferences for procedural type`() {
-            val props = listOf(
-                createProposition("User prefers morning meetings"),
-                createProposition("User likes tea"),
+        fun `expands to propositions about the same entity when direct hits are thin`() {
+            val mention = EntityMention(span = "Sushila", type = "Person", resolvedId = "sushila-1")
+            val seed = Proposition(
+                contextId = contextId,
+                text = "Sushila works at Embabel",
+                mentions = listOf(mention),
+                confidence = 0.9,
             )
-            every { repository.query(any()) } returns props
-
-            every { projector.project(any()) } returns MemoryProjection(
-                procedural = props,
+            val related = Proposition(
+                contextId = contextId,
+                text = "Sushila joined the GitHub org",
+                mentions = listOf(mention),
+                confidence = 0.8,
             )
+            // Vector finds the seed. The keyword-candidate query (no
+            // entity filter) returns nothing; the expansion query (entity
+            // filter set) returns the related proposition.
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns listOf(SimilarityResult(seed, 0.9))
+            every { repository.query(any()) } answers {
+                val q = firstArg<PropositionQuery>()
+                if (q.anyEntityIds != null) listOf(seed, related) else emptyList()
+            }
 
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-                .withProjector(projector)
+            val memory = Memory.forContext(contextId).withRepository(repository)
 
-            val result = memory.call("""{"type": "procedural"}""")
-            val text = (result as com.embabel.agent.api.tool.Tool.Result.Text).content
-
-            assertTrue(text.contains("Preferences"))
-            assertTrue(text.contains("User prefers morning meetings"))
-            assertTrue(text.contains("User likes tea"))
+            val result = memory.call("""{"query": "Sushila"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("[related] Sushila joined the GitHub org"), text)
         }
 
         @Test
-        fun `returns error for invalid type`() {
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
+        fun `surfaces resolved entity ids so the LLM can drill in`() {
+            val p = Proposition(
+                contextId = contextId,
+                text = "Sushila works at Embabel",
+                mentions = listOf(
+                    EntityMention(span = "Sushila", type = "Person", resolvedId = "sushila-1"),
+                    EntityMention(span = "Embabel", type = "Organization", resolvedId = "embabel-1"),
+                ),
+                confidence = 0.9,
+            )
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns listOf(SimilarityResult(p, 0.9))
+            every { repository.query(any()) } returns emptyList()
 
-            val result = memory.call("""{"type": "invalid"}""")
+            val memory = Memory.forContext(contextId).withRepository(repository)
 
-            assertTrue(result is com.embabel.agent.api.tool.Tool.Result.Error)
+            val result = memory.call("""{"query": "Sushila employer"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("entities:"), text)
+            assertTrue(text.contains("sushila-1"), text)
+            assertTrue(text.contains("embabel-1"), text)
         }
 
         @Test
-        fun `returns empty message when no matching type`() {
-            every { repository.query(any()) } returns listOf(createProposition("Some fact"))
-            every { projector.project(any()) } returns MemoryProjection(
-                semantic = listOf(createProposition("Some fact")),
-            )
+        fun `annotates results with provenance when a resolver is wired`() {
+            val p = createProposition("Sushila works at Embabel")
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns listOf(SimilarityResult(p, 0.9))
+            every { repository.query(any()) } returns emptyList()
 
             val memory = Memory.forContext(contextId)
                 .withRepository(repository)
-                .withProjector(projector)
+                .withProvenance { ids -> ids.associateWith { listOf("Contractor agreement email") } }
 
-            val result = memory.call("""{"type": "episodic"}""")
-            val text = (result as com.embabel.agent.api.tool.Tool.Result.Text).content
-
-            assertTrue(text.contains("No episodic memories found"))
+            val result = memory.call("""{"query": "Sushila employer"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("— source: Contractor agreement email"), text)
         }
     }
 
@@ -530,7 +566,7 @@ class MemoryTest {
     inner class NarrowedByTests {
 
         @Test
-        fun `narrowedBy applies entity filter to searchByTopic`() {
+        fun `narrowedBy applies entity filter to hybrid search`() {
             val querySlot = slot<PropositionQuery>()
             every {
                 repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), capture(querySlot))
@@ -540,7 +576,7 @@ class MemoryTest {
                 .withRepository(repository)
                 .narrowedBy { it.withEntityId("alice-123") }
 
-            memory.call("""{"topic": "jazz"}""")
+            memory.call("""{"query": "jazz"}""")
 
             assertEquals("alice-123", querySlot.captured.entityId)
             assertEquals(contextId, querySlot.captured.contextId)
@@ -561,24 +597,6 @@ class MemoryTest {
             val listAllQuery = queries.first { it.orderBy == PropositionQuery.OrderBy.EFFECTIVE_CONFIDENCE_DESC }
             assertEquals("alice-123", listAllQuery.entityId)
             assertEquals(contextId, listAllQuery.contextId)
-        }
-
-        @Test
-        fun `narrowedBy applies entity filter to searchByType`() {
-            val queries = mutableListOf<PropositionQuery>()
-            every { repository.query(capture(queries)) } returns emptyList()
-            every { projector.project(any()) } returns MemoryProjection()
-
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-                .withProjector(projector)
-                .narrowedBy { it.withEntityId("alice-123") }
-
-            memory.call("""{"type": "semantic"}""")
-
-            val typeQuery = queries.first { it.orderBy == PropositionQuery.OrderBy.EFFECTIVE_CONFIDENCE_DESC }
-            assertEquals("alice-123", typeQuery.entityId)
-            assertEquals(contextId, typeQuery.contextId)
         }
 
         @Test
@@ -661,83 +679,12 @@ class MemoryTest {
             val memory = Memory.forContext(contextId)
                 .withRepository(repository)
 
-            memory.call("""{"topic": "jazz"}""")
+            memory.call("""{"query": "jazz"}""")
 
             assertEquals(contextId, querySlot.captured.contextId)
             assertNull(querySlot.captured.entityId)
             assertNull(querySlot.captured.minLevel)
             assertNull(querySlot.captured.status)
-        }
-    }
-
-    @Nested
-    inner class LevelParameterTests {
-
-        @Test
-        fun `searchByTopic passes level to query`() {
-            val querySlot = slot<PropositionQuery>()
-            every {
-                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), capture(querySlot))
-            } returns emptyList()
-
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-
-            memory.call("""{"topic": "jazz", "level": 1}""")
-
-            assertEquals(1, querySlot.captured.minLevel)
-            assertEquals(1, querySlot.captured.maxLevel)
-        }
-
-        @Test
-        fun `searchByTopic without level leaves levels unset`() {
-            val querySlot = slot<PropositionQuery>()
-            every {
-                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), capture(querySlot))
-            } returns emptyList()
-
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-
-            memory.call("""{"topic": "jazz"}""")
-
-            assertNull(querySlot.captured.minLevel)
-            assertNull(querySlot.captured.maxLevel)
-        }
-
-        @Test
-        fun `searchByType passes level to query`() {
-            val queries = mutableListOf<PropositionQuery>()
-            every { repository.query(capture(queries)) } returns emptyList()
-            every { projector.project(any()) } returns MemoryProjection()
-
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-                .withProjector(projector)
-
-            memory.call("""{"type": "semantic", "level": 2}""")
-
-            val typeQuery = queries.first { it.orderBy == PropositionQuery.OrderBy.EFFECTIVE_CONFIDENCE_DESC }
-            assertEquals(2, typeQuery.minLevel)
-            assertEquals(2, typeQuery.maxLevel)
-        }
-
-        @Test
-        fun `level composes with narrowedBy`() {
-            val querySlot = slot<PropositionQuery>()
-            every {
-                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), capture(querySlot))
-            } returns emptyList()
-
-            val memory = Memory.forContext(contextId)
-                .withRepository(repository)
-                .narrowedBy { it.withEntityId("alice") }
-
-            memory.call("""{"topic": "jazz", "level": 1}""")
-
-            assertEquals("alice", querySlot.captured.entityId)
-            assertEquals(1, querySlot.captured.minLevel)
-            assertEquals(1, querySlot.captured.maxLevel)
         }
     }
 
@@ -950,7 +897,7 @@ class MemoryTest {
     inner class NarrowedByMultiEntityTests {
 
         @Test
-        fun `narrowedBy with anyEntityIds scopes searchByTopic`() {
+        fun `narrowedBy with anyEntityIds scopes hybrid search`() {
             val querySlot = slot<PropositionQuery>()
             every {
                 repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), capture(querySlot))
@@ -960,7 +907,7 @@ class MemoryTest {
                 .withRepository(repository)
                 .narrowedBy { it.withAnyEntity("alice", "bob") }
 
-            memory.call("""{"topic": "jazz"}""")
+            memory.call("""{"query": "jazz"}""")
 
             assertEquals(listOf("alice", "bob"), querySlot.captured.anyEntityIds)
         }
