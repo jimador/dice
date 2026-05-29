@@ -21,6 +21,7 @@ import com.embabel.agent.core.ContextId
 import com.embabel.common.core.types.SimilarityResult
 import com.embabel.common.core.types.TextSimilaritySearchRequest
 import com.embabel.dice.projection.memory.MemoryProjector
+import com.embabel.dice.proposition.EntityMention
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionRepository
@@ -349,6 +350,101 @@ class MemoryTest {
             assertEquals(5, requestSlot.captured.topK)
             assertEquals(contextId, querySlot.captured.contextId)
             assertEquals(0.7, querySlot.captured.minEffectiveConfidence)
+        }
+
+        @Test
+        fun `keyword probe matches by term overlap not whole-string substring`() {
+            // A phrase query never substring-matches a proposition, but
+            // its salient token ("Canva") does.
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns emptyList()
+            every { repository.query(any()) } returns listOf(
+                createProposition("SimTheory was recently acquired by Canva"),
+                createProposition("User prefers tea over juice"),
+            )
+
+            val memory = Memory.forContext(contextId).withRepository(repository)
+
+            val result = memory.call("""{"query": "what evidence shows interest in Canva"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("[keyword] SimTheory was recently acquired by Canva"), text)
+            assertFalse(text.contains("tea over juice"), text)
+        }
+
+        @Test
+        fun `expands to propositions about the same entity when direct hits are thin`() {
+            val mention = EntityMention(span = "Sushila", type = "Person", resolvedId = "sushila-1")
+            val seed = Proposition(
+                contextId = contextId,
+                text = "Sushila works at Embabel",
+                mentions = listOf(mention),
+                confidence = 0.9,
+            )
+            val related = Proposition(
+                contextId = contextId,
+                text = "Sushila joined the GitHub org",
+                mentions = listOf(mention),
+                confidence = 0.8,
+            )
+            // Vector finds the seed. The keyword-candidate query (no
+            // entity filter) returns nothing; the expansion query (entity
+            // filter set) returns the related proposition.
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns listOf(SimilarityResult(seed, 0.9))
+            every { repository.query(any()) } answers {
+                val q = firstArg<PropositionQuery>()
+                if (q.anyEntityIds != null) listOf(seed, related) else emptyList()
+            }
+
+            val memory = Memory.forContext(contextId).withRepository(repository)
+
+            val result = memory.call("""{"query": "Sushila"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("[related] Sushila joined the GitHub org"), text)
+        }
+
+        @Test
+        fun `surfaces resolved entity ids so the LLM can drill in`() {
+            val p = Proposition(
+                contextId = contextId,
+                text = "Sushila works at Embabel",
+                mentions = listOf(
+                    EntityMention(span = "Sushila", type = "Person", resolvedId = "sushila-1"),
+                    EntityMention(span = "Embabel", type = "Organization", resolvedId = "embabel-1"),
+                ),
+                confidence = 0.9,
+            )
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns listOf(SimilarityResult(p, 0.9))
+            every { repository.query(any()) } returns emptyList()
+
+            val memory = Memory.forContext(contextId).withRepository(repository)
+
+            val result = memory.call("""{"query": "Sushila employer"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("entities:"), text)
+            assertTrue(text.contains("sushila-1"), text)
+            assertTrue(text.contains("embabel-1"), text)
+        }
+
+        @Test
+        fun `annotates results with provenance when a resolver is wired`() {
+            val p = createProposition("Sushila works at Embabel")
+            every {
+                repository.findSimilarWithScores(any<TextSimilaritySearchRequest>(), any<PropositionQuery>())
+            } returns listOf(SimilarityResult(p, 0.9))
+            every { repository.query(any()) } returns emptyList()
+
+            val memory = Memory.forContext(contextId)
+                .withRepository(repository)
+                .withProvenance { ids -> ids.associateWith { listOf("Contractor agreement email") } }
+
+            val result = memory.call("""{"query": "Sushila employer"}""")
+            val text = (result as Tool.Result.Text).content
+            assertTrue(text.contains("— source: Contractor agreement email"), text)
         }
     }
 
