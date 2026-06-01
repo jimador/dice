@@ -18,6 +18,8 @@ package com.embabel.dice.proposition
 import com.embabel.agent.core.ContextId
 import com.embabel.agent.rag.model.Retrievable
 import com.embabel.common.core.types.ZeroToOne
+import com.embabel.dice.provenance.GroundingEntry
+import com.embabel.dice.temporal.TemporalMetadata
 import java.time.Instant
 import java.util.*
 
@@ -67,6 +69,11 @@ enum class PropositionStatus {
  * @property sourceIds IDs of propositions this was abstracted from (empty for level 0)
  * @property reinforceCount How many times this proposition has been merged or reinforced.
  *   Provides a frequency/importance signal complementary to confidence and decay.
+ * @property temporal Optional bitemporal metadata (observed/valid time, supersession,
+ *   contradiction). Null when temporal correctness is not tracked for this proposition.
+ * @property groundingEntries Rich grounding entries linking this proposition to source
+ *   material via [com.embabel.dice.provenance.SourceLocator]. Complements the legacy
+ *   chunk-id-only [grounding] list.
  */
 data class Proposition(
     override val id: String = UUID.randomUUID().toString(),
@@ -87,6 +94,8 @@ data class Proposition(
     val reinforceCount: Int = 0,
     override val metadata: Map<String, Any> = emptyMap(),
     override val uri: String? = null,
+    val temporal: TemporalMetadata? = null,
+    val groundingEntries: List<GroundingEntry> = emptyList(),
 ) : Derivation, ReferencesEntities, Retrievable {
 
     /**
@@ -132,6 +141,8 @@ data class Proposition(
             reinforceCount: Int = 0,
             metadata: Map<String, Any> = emptyMap(),
             uri: String? = null,
+            temporal: TemporalMetadata? = null,
+            groundingEntries: List<GroundingEntry> = emptyList(),
         ): Proposition = Proposition(
             id = id,
             contextId = ContextId(contextIdValue),
@@ -151,6 +162,8 @@ data class Proposition(
             reinforceCount = reinforceCount,
             metadata = metadata,
             uri = uri,
+            temporal = temporal,
+            groundingEntries = groundingEntries,
         )
     }
 
@@ -201,6 +214,18 @@ data class Proposition(
      */
     fun withGrounding(chunkIds: List<String>): Proposition =
         copy(grounding = (grounding + chunkIds).distinct(), revised = Instant.now())
+
+    /**
+     * Create a copy with the given temporal metadata.
+     */
+    fun withTemporal(temporal: TemporalMetadata): Proposition =
+        copy(temporal = temporal, revised = Instant.now())
+
+    /**
+     * Create a copy with additional rich grounding entries.
+     */
+    fun withGroundingEntries(entries: List<GroundingEntry>): Proposition =
+        copy(groundingEntries = (groundingEntries + entries).distinct(), revised = Instant.now())
 
     /**
      * Calculate the effective confidence after applying time-based decay.
