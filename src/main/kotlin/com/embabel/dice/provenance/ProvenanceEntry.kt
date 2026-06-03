@@ -16,25 +16,25 @@
 package com.embabel.dice.provenance
 
 /**
- * Links a proposition to the source material that grounds it.
+ * Links a proposition to the source material it was derived from.
  *
  * Each entry carries a [SourceLocator] identifying where the material lives,
  * together with optional detail locating the content within that source: the
- * originating chunk, a character offset range, and a content hash. This carries
- * more detail than a bare list of chunk IDs.
+ * originating chunk, a character offset range, and a content hash. This rich
+ * provenance carries more detail than a bare list of chunk IDs.
  *
- * All detail beyond the [locator] is optional, so coarse grounding (the source
- * document) and precise grounding (a character range within a chunk) share a
+ * All detail beyond the [locator] is optional, so coarse provenance (the source
+ * document) and precise provenance (a character range within a chunk) share a
  * single representation.
  *
  * @property locator Reference to where the source material lives
- * @property chunkId Optional ID of the chunk this grounding came from
+ * @property chunkId Optional ID of the chunk this provenance came from
  * @property startOffset Optional inclusive start character offset within the source/chunk
  * @property endOffset Optional exclusive end character offset within the source/chunk
- * @property contentHash Optional hash of the grounded content. Comparing it against the
+ * @property contentHash Optional hash of the source content. Comparing it against the
  *   source later can reveal that the source has since changed.
  */
-data class GroundingEntry @JvmOverloads constructor(
+data class ProvenanceEntry @JvmOverloads constructor(
     val locator: SourceLocator,
     val chunkId: String? = null,
     val startOffset: Int? = null,
