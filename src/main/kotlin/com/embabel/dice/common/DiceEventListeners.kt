@@ -18,16 +18,14 @@ package com.embabel.dice.common
 import org.slf4j.LoggerFactory
 
 /**
- * A [DiceEventListener] decorator that isolates the emitting caller from a misbehaving
- * delegate: any [Throwable] raised while delivering an event is caught and logged rather
- * than propagated.
+ * Wraps another listener and stops it from taking down the caller: if the wrapped listener
+ * throws, the error is logged and swallowed instead of bubbling up.
  *
- * Mirrors the catch-Throwable-and-log graceful-degradation precedent in
- * [com.embabel.dice.agent.Memory.loadEagerMemories]. Since DICE ships no threading policy,
- * listeners run synchronously inside the emit call; this wrapper ensures a single faulty
- * listener cannot abort the operation that produced the event.
+ * This matters because listeners run synchronously, right inside the call that emitted the
+ * event — DICE doesn't put them on a separate thread. Without this wrapper, one buggy
+ * listener could abort the very operation that produced the event.
  *
- * @property delegate The listener whose delivery should be made exception-safe.
+ * @property delegate The listener to make exception-safe.
  */
 class SafeDiceEventListener(
     private val delegate: DiceEventListener,
@@ -45,11 +43,11 @@ class SafeDiceEventListener(
 }
 
 /**
- * A [DiceEventListener] that fans an event out to every listener in [listeners]. Each
- * delivery is wrapped with [SafeDiceEventListener] semantics so that one throwing listener
- * does not prevent the rest of the chain from receiving the event.
+ * Delivers each event to several listeners in turn. Every delivery is made exception-safe
+ * (see [SafeDiceEventListener]), so one listener throwing doesn't stop the others from
+ * hearing about the event.
  *
- * @property listeners The listeners to fan out to, in order.
+ * @property listeners The listeners to notify, in order.
  */
 class CompositeDiceEventListener(
     private val listeners: List<DiceEventListener>,
@@ -63,8 +61,8 @@ class CompositeDiceEventListener(
 }
 
 /**
- * A [DiceEventListener] that logs each received event at debug level and does nothing else.
- * Useful as a low-overhead observability hook; never throws.
+ * Logs every event it receives at debug level and nothing more. A cheap way to see the
+ * event stream while developing or debugging; it never throws.
  */
 class LoggingDiceEventListener : DiceEventListener {
 

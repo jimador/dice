@@ -23,6 +23,11 @@ import com.embabel.dice.proposition.PropositionStatus
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.time.Instant
 
+/**
+ * Something noteworthy that happened to a proposition as it moved through DICE — discovered,
+ * merged, contradicted, saved, gone stale, and so on. Each subtype is a specific moment you
+ * can listen for; every event knows when it occurred.
+ */
 @JsonTypeInfo(
     use = JsonTypeInfo.Id.CLASS,
     include = JsonTypeInfo.As.PROPERTY,
@@ -31,11 +36,12 @@ import java.time.Instant
 interface DiceEvent : Timestamped
 
 /**
- * Legacy empty contradiction signal.
+ * The original contradiction signal, which carried no information about *what* was
+ * contradicted.
  *
- * @deprecated Carries no payload. Replaced by [PropositionContradicted], which
- * carries the [ContextId] plus both the original and the contradicting proposition.
- * Retained (deprecate-only) this release for backward compatibility; will be removed later.
+ * @deprecated Use [PropositionContradicted] instead — it tells you the context and hands
+ * you both the original and the contradicting proposition. This empty version stays around
+ * for one release so existing listeners keep compiling, and will be removed after that.
  *
  * @property timestamp When the event was created.
  */
@@ -48,7 +54,7 @@ data class ContradictionEvent(
 ) : DiceEvent
 
 /**
- * Emitted when a brand-new proposition is discovered (mirrors [com.embabel.dice.proposition.revision.RevisionResult.New]).
+ * A brand-new proposition was discovered — nothing like it existed before.
  *
  * @property proposition The newly discovered proposition.
  * @property timestamp When the event was created.
@@ -59,11 +65,10 @@ data class PropositionDiscovered @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted when an incoming proposition is merged into an existing one
- * (mirrors [com.embabel.dice.proposition.revision.RevisionResult.Merged]).
+ * An incoming proposition was folded into one we already had, producing a combined version.
  *
- * @property original The pre-existing proposition.
- * @property revised The merged result.
+ * @property original The proposition that already existed.
+ * @property revised The combined result after the merge.
  * @property timestamp When the event was created.
  */
 data class PropositionMerged @JvmOverloads constructor(
@@ -73,11 +78,10 @@ data class PropositionMerged @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted when an existing proposition is reinforced by a similar new one
- * (mirrors [com.embabel.dice.proposition.revision.RevisionResult.Reinforced]).
+ * A similar proposition came in and reinforced one we already trusted, strengthening it.
  *
- * @property original The pre-existing proposition.
- * @property revised The reinforced result.
+ * @property original The proposition that already existed.
+ * @property revised The strengthened result.
  * @property timestamp When the event was created.
  */
 data class PropositionReinforced @JvmOverloads constructor(
@@ -87,13 +91,12 @@ data class PropositionReinforced @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted when a new proposition contradicts an existing one
- * (mirrors [com.embabel.dice.proposition.revision.RevisionResult.Contradicted], whose
- * field is `new` rather than `revised`). Carries the [ContextId].
+ * A new proposition directly contradicts one we already held. Both are handed to listeners
+ * so they can decide how to reconcile them.
  *
- * @property contextId The context in which the contradiction was detected.
- * @property original The pre-existing proposition.
- * @property new The contradicting proposition.
+ * @property contextId The context in which the contradiction surfaced.
+ * @property original The proposition that already existed.
+ * @property new The new proposition that contradicts it.
  * @property timestamp When the event was created.
  */
 data class PropositionContradicted @JvmOverloads constructor(
@@ -104,11 +107,10 @@ data class PropositionContradicted @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted when a higher-level proposition generalizes a group of source propositions
- * (mirrors [com.embabel.dice.proposition.revision.RevisionResult.Generalized]).
+ * A higher-level proposition was formed that generalizes over a group of more specific ones.
  *
- * @property proposition The generalizing (abstract) proposition.
- * @property generalizes The source propositions it abstracts over.
+ * @property proposition The abstract proposition that was formed.
+ * @property generalizes The specific propositions it summarizes.
  * @property timestamp When the event was created.
  */
 data class PropositionGeneralized @JvmOverloads constructor(
@@ -118,10 +120,11 @@ data class PropositionGeneralized @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * The canonical durable signal: emitted at the persistence boundary once a proposition
- * has been saved. The full proposition snapshot is carried.
+ * A proposition was saved. This is the signal to rely on when you care that something
+ * actually made it to durable storage, not just that it was proposed — it fires once the
+ * write is done and carries the saved state.
  *
- * @property proposition The persisted proposition (post-save state).
+ * @property proposition The proposition as it was saved.
  * @property timestamp When the event was created.
  */
 data class PropositionPersisted @JvmOverloads constructor(
@@ -130,13 +133,12 @@ data class PropositionPersisted @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted once a projection batch finishes, summarizing per-outcome counts
- * (from [com.embabel.dice.proposition.ProjectionResults]).
+ * A batch of propositions finished projecting, with a tally of how each one turned out.
  *
- * @property successCount Number of successful projections.
- * @property skipCount Number of skipped projections.
- * @property failureCount Number of failed projections.
- * @property totalCount Total propositions in the batch.
+ * @property successCount How many projected successfully.
+ * @property skipCount How many were skipped.
+ * @property failureCount How many failed.
+ * @property totalCount How many propositions were in the batch.
  * @property timestamp When the event was created.
  */
 data class ProjectionBatchCompleted @JvmOverloads constructor(
@@ -148,9 +150,9 @@ data class ProjectionBatchCompleted @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted once an extraction batch finishes, carrying the revision [PropositionExtractionStats].
+ * A batch of text finished extraction, carrying the stats on what came out of it.
  *
- * @property stats Per-outcome statistics for the extraction batch.
+ * @property stats How the extraction batch broke down by outcome.
  * @property timestamp When the event was created.
  */
 data class ExtractionBatchCompleted @JvmOverloads constructor(
@@ -159,17 +161,13 @@ data class ExtractionBatchCompleted @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted when a proposition's lifecycle [PropositionStatus] changes (e.g. ACTIVE → STALE
- * during a decay sweep, or STALE → ACTIVE on revival).
+ * A proposition moved to a different lifecycle [PropositionStatus] — for example going stale
+ * during a decay sweep, or coming back to life when it's seen again.
  *
- * This event is only *defined* here; emission wiring is handled separately by the
- * persistence-boundary repository decorator. The name is chosen so emission can be wired
- * without renaming.
- *
- * @property proposition The proposition whose status changed (post-transition state).
- * @property previousStatus The status before the transition.
- * @property newStatus The status after the transition.
- * @property reason Optional free-text explanation for the transition.
+ * @property proposition The proposition, in its state after the change.
+ * @property previousStatus Where it was before.
+ * @property newStatus Where it is now.
+ * @property reason An optional note on why it changed.
  */
 data class PropositionStatusChanged(
     val proposition: Proposition,
@@ -180,9 +178,7 @@ data class PropositionStatusChanged(
 ) : DiceEvent
 
 /**
- * Emitted when a proposition is pinned (marked sweep-exempt).
- *
- * This event is only *defined* here; emission wiring is handled separately by the persistence-boundary decorator.
+ * A proposition was pinned, so decay sweeps will leave it alone.
  *
  * @property proposition The proposition that was pinned.
  */
@@ -192,9 +188,7 @@ data class PropositionPinned(
 ) : DiceEvent
 
 /**
- * Emitted when a proposition is unpinned (no longer sweep-exempt).
- *
- * This event is only *defined* here; emission wiring is handled separately by the persistence-boundary decorator.
+ * A proposition was unpinned, so it's back in scope for decay sweeps.
  *
  * @property proposition The proposition that was unpinned.
  */
@@ -204,15 +198,12 @@ data class PropositionUnpinned(
 ) : DiceEvent
 
 /**
- * Emitted when a post-extraction routing decision rejects a proposition (it should be
- * discarded rather than persisted). Carries the full proposition snapshot, matching the
- * convention of the other events here.
- *
- * Note: the proposition (including its text) is carried into consumer-supplied listeners,
- * identical exposure to every other [DiceEvent]; consumers control which listeners receive it.
+ * A proposition was turned away after extraction — it should be discarded rather than saved.
+ * Like every other event here, it carries the whole proposition (text included) to whichever
+ * listeners you've wired up.
  *
  * @property proposition The proposition that was rejected.
- * @property reason Developer-authored explanation for the rejection.
+ * @property reason Why it was rejected.
  * @property timestamp When the event was created.
  */
 data class PropositionRejected @JvmOverloads constructor(
@@ -222,11 +213,11 @@ data class PropositionRejected @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted when a post-extraction routing decision routes a proposition to a review queue
- * rather than persisting it directly. Carries the full proposition snapshot.
+ * A proposition was set aside for a human (or a later pass) to look at, rather than being
+ * saved straight away.
  *
- * @property proposition The proposition routed to review.
- * @property reason Developer-authored explanation for the routing.
+ * @property proposition The proposition sent to review.
+ * @property reason Why it needs a second look.
  * @property timestamp When the event was created.
  */
 data class PropositionRoutedToReview @JvmOverloads constructor(
@@ -236,12 +227,11 @@ data class PropositionRoutedToReview @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
- * Emitted when a post-extraction routing decision excludes a proposition from projection
- * (it may still be persisted, but is not projected to downstream representations). Carries
- * the full proposition snapshot.
+ * A proposition was kept out of projection — it may still be saved, but it won't be pushed
+ * out to the downstream representations (graph, Prolog, memory, and so on).
  *
- * @property proposition The proposition excluded from projection.
- * @property reason Developer-authored explanation for skipping projection.
+ * @property proposition The proposition that won't be projected.
+ * @property reason Why projection was skipped.
  * @property timestamp When the event was created.
  */
 data class PropositionProjectionSkipped @JvmOverloads constructor(
@@ -250,16 +240,21 @@ data class PropositionProjectionSkipped @JvmOverloads constructor(
     override val timestamp: Instant = Instant.now(),
 ) : DiceEvent
 
+/**
+ * Implement this to react to [DiceEvent]s as they happen. Keep in mind handlers run inline
+ * on the emitting thread, so do anything slow off to the side.
+ */
 fun interface DiceEventListener {
     fun onEvent(event: DiceEvent)
 
     companion object {
+        /** A listener that ignores everything — handy as a default when no one's listening. */
         val DEV_NULL: DiceEventListener = DevNull
     }
 }
 
 private object DevNull : DiceEventListener {
     override fun onEvent(event: DiceEvent) {
-        // Do nothing
+        // Intentionally ignores every event.
     }
 }
