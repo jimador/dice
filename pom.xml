@@ -91,4 +91,27 @@
         </repository>
     </repositories>
 
+    <build>
+        <plugins>
+            <plugin>
+                <!--
+                    Pin the Docker Engine API version used by the docker-java client that
+                    Testcontainers drives. docker-java defaults to API 1.32, which is below the
+                    minimum API version advertised by recent Docker Engines (1.40+). Those engines
+                    reject the client's /info probe with HTTP 400, which disables every
+                    container-backed test. The version is only honoured as a JVM system property,
+                    and tests run in a forked JVM, so it must be set here. 1.41 clears the modern
+                    minimum while remaining compatible with the broadest range of engines.
+                -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <api.version>1.41</api.version>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>
