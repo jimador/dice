@@ -70,6 +70,7 @@ sealed class RevisionResult {
     data class Contradicted(
         val original: Proposition,
         val new: Proposition,
+        val conflictType: ConflictType = ConflictType.Contradiction,
     ) : RevisionResult()
 
     /** Stored as a new proposition (no similar ones found) */

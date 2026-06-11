@@ -868,6 +868,165 @@ class PropositionReviserTest {
         }
     }
 
+    @Nested
+    inner class TrustAndConflictWiringTests {
+
+        private val trustKey = com.embabel.dice.common.DiceMetadataKeys.TRUST_SCORE
+
+        private fun Proposition.trustScore(): Any? = metadata[trustKey]
+
+        @Test
+        fun `default reviser writes no trust score on new or merged results`() {
+            val repository = TestPropositionRepository(defaultScore = 0.3)
+            val existing = createProposition("Alice is a software engineer", confidence = 0.7)
+            repository.save(existing)
+
+            val reviser = LlmPropositionReviser(
+                llmOptions = io.mockk.mockk(),
+                ai = io.mockk.mockk(),
+            )
+
+            val mergedResult = reviser.retrieveAndFastPath(
+                createProposition("Alice is a software engineer", confidence = 0.8),
+                repository,
+            )
+            assertTrue(mergedResult is RevisionResult.Merged)
+            assertNull((mergedResult as RevisionResult.Merged).revised.trustScore())
+
+            val newResult = reviser.retrieveAndFastPath(
+                createProposition("Bob is a designer", confidence = 0.8),
+                repository,
+            )
+            assertTrue(newResult is RevisionResult.New)
+            assertNull((newResult as RevisionResult.New).proposition.trustScore())
+        }
+
+        @Test
+        fun `wired scorer caches trust score on new merged and reinforced but not contradicted`() {
+            val repository = TestPropositionRepository(defaultScore = 0.3)
+            val existing = createProposition("Alice is a software engineer", confidence = 0.7)
+            repository.save(existing)
+
+            val reviser = LlmPropositionReviser(
+                llmOptions = io.mockk.mockk(),
+                ai = io.mockk.mockk(),
+            ).withTrustScorer { _, _, _ -> 0.8 }
+
+            // Merged via canonical fast path
+            val mergedResult = reviser.retrieveAndFastPath(
+                createProposition("Alice is a software engineer", confidence = 0.8),
+                repository,
+            )
+            assertTrue(mergedResult is RevisionResult.Merged)
+            assertEquals(0.8, (mergedResult as RevisionResult.Merged).revised.trustScore())
+
+            // New via no match
+            val newResult = reviser.retrieveAndFastPath(
+                createProposition("Charlie is a manager", confidence = 0.8),
+                repository,
+            )
+            assertTrue(newResult is RevisionResult.New)
+            assertEquals(0.8, (newResult as RevisionResult.New).proposition.trustScore())
+
+            // Reinforced via classified path
+            val reinforcedResult = reviser.classifiedToResult(
+                createProposition("Alice works as a software engineer", confidence = 0.8),
+                listOf(ClassifiedProposition(existing, PropositionRelation.SIMILAR, 0.8, "Related")),
+                repository,
+            )
+            assertTrue(reinforcedResult is RevisionResult.Reinforced)
+            assertEquals(0.8, (reinforcedResult as RevisionResult.Reinforced).revised.trustScore())
+
+            // Contradicted via classified path — must NOT carry a trust score
+            val contradictedResult = reviser.classifiedToResult(
+                createProposition("Alice is unemployed", confidence = 0.9),
+                listOf(ClassifiedProposition(existing, PropositionRelation.CONTRADICTORY, 0.1, "Opposite")),
+                repository,
+            )
+            assertTrue(contradictedResult is RevisionResult.Contradicted)
+            assertNull((contradictedResult as RevisionResult.Contradicted).original.trustScore())
+        }
+
+        @Test
+        fun `scoring leaves the decay anchor untouched`() {
+            val repository = TestPropositionRepository(defaultScore = 0.3)
+
+            val reviser = LlmPropositionReviser(
+                llmOptions = io.mockk.mockk(),
+                ai = io.mockk.mockk(),
+            ).withTrustScorer { _, _, _ -> 0.42 }
+
+            val input = createProposition("Dana lives in Berlin", confidence = 0.8)
+            val anchorBefore = input.contentRevised
+
+            val result = reviser.retrieveAndFastPath(input, repository)
+            assertTrue(result is RevisionResult.New)
+            val scored = (result as RevisionResult.New).proposition
+            assertEquals(0.42, scored.trustScore())
+            assertEquals(anchorBefore, scored.contentRevised)
+        }
+
+        @Test
+        fun `scoring advances the admin metadata clock as a metadata-only touch`() {
+            val repository = TestPropositionRepository(defaultScore = 0.3)
+
+            val reviser = LlmPropositionReviser(
+                llmOptions = io.mockk.mockk(),
+                ai = io.mockk.mockk(),
+            ).withTrustScorer { _, _, _ -> 0.42 }
+
+            // Anchor the input firmly in the past so the metadata touch is observably later.
+            val past = java.time.Instant.parse("2020-01-01T00:00:00Z")
+            val input = createProposition("Erin lives in Oslo", confidence = 0.8)
+                .copy(contentRevised = past, metadataRevised = past)
+
+            val result = reviser.retrieveAndFastPath(input, repository)
+            assertTrue(result is RevisionResult.New)
+            val scored = (result as RevisionResult.New).proposition
+
+            // The trust write is an administrative touch: it must advance metadataRevised,
+            // never re-anchor the decay clock (contentRevised). Asserting only that
+            // contentRevised is preserved would also pass a regression that wrote trust via
+            // a plain copy() that left metadataRevised stale.
+            assertEquals(0.42, scored.trustScore())
+            assertEquals(past, scored.contentRevised, "decay clock must be preserved")
+            assertTrue(
+                scored.metadataRevised.isAfter(past),
+                "trust write must advance metadataRevised (admin touch), got ${scored.metadataRevised}",
+            )
+        }
+
+        @Test
+        fun `wired conflict detector populates conflict type while default stays contradiction`() {
+            val repository = TestPropositionRepository(defaultScore = 0.3)
+            val existing = createProposition("Alice works at Acme", confidence = 0.8)
+            repository.save(existing)
+
+            val candidates =
+                listOf(ClassifiedProposition(existing, PropositionRelation.CONTRADICTORY, 0.1, "Opposite"))
+            val incoming = createProposition("Alice works at Globex", confidence = 0.9)
+
+            val defaultReviser = LlmPropositionReviser(
+                llmOptions = io.mockk.mockk(),
+                ai = io.mockk.mockk(),
+            )
+            val defaultResult = defaultReviser.classifiedToResult(incoming, candidates, repository)
+            assertTrue(defaultResult is RevisionResult.Contradicted)
+            assertEquals(
+                ConflictType.Contradiction,
+                (defaultResult as RevisionResult.Contradicted).conflictType,
+            )
+
+            val wiredReviser = defaultReviser.withConflictDetector { _, _ -> ConflictType.WorldProgression }
+            val wiredResult = wiredReviser.classifiedToResult(incoming, candidates, repository)
+            assertTrue(wiredResult is RevisionResult.Contradicted)
+            assertEquals(
+                ConflictType.WorldProgression,
+                (wiredResult as RevisionResult.Contradicted).conflictType,
+            )
+        }
+    }
+
     private fun createProposition(
         text: String,
         confidence: Double = 0.8,
@@ -883,15 +1042,15 @@ class PropositionReviserTest {
 }
 
 /**
- * Simple test implementation of PropositionRepository that doesn't require embeddings.
- * @param defaultScore Default similarity score returned for all propositions
+ * In-memory proposition repository for tests — no embedding service required.
+ * @param defaultScore similarity score returned for every stored proposition
  */
 class TestPropositionRepository(
     private val defaultScore: Double = 0.8,
 ) : PropositionRepository {
     private val propositions = ConcurrentHashMap<String, Proposition>()
 
-    /** Per-proposition-text score overrides (matched against stored proposition text) */
+    /** Per-proposition-text score overrides, matched against stored proposition text. */
     val scoreOverrides = mutableMapOf<String, Double>()
 
     override fun save(proposition: Proposition): Proposition {
@@ -943,8 +1102,9 @@ class TestPropositionRepository(
 }
 
 /**
- * Test implementation of PropositionReviser with configurable classification behavior,
- * auto-merge support, and batch classification tracking.
+ * Controllable [PropositionReviser] for tests. Supports pre-configured per-call and per-batch
+ * classification results, auto-merge fast-path, and a call counter so tests can assert whether
+ * the LLM classify path was hit.
  */
 class TestPropositionReviser(
     private val autoMergeThreshold: Double = 1.1,
@@ -952,7 +1112,7 @@ class TestPropositionReviser(
     var nextClassification: List<ClassifiedProposition> = emptyList()
     var classifyCallCount: Int = 0
 
-    /** Per-batch-index classification results for batch tests */
+    /** Classification results keyed by batch index, used by batch-flow tests. */
     var batchClassifications: Map<Int, List<ClassifiedProposition>> = emptyMap()
     private var batchIndex: Int = 0
 
