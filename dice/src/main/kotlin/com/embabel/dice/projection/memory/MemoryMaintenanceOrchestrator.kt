@@ -26,12 +26,14 @@ import com.embabel.dice.proposition.PropositionRepository
  * @property abstractions New abstract propositions generated from entity groups
  * @property superseded Source propositions that were marked SUPERSEDED after abstraction
  * @property retired Propositions that were deleted because their effective confidence fell below the threshold
+ * @property collectorResult Result of the optional collector phase, or null when no collector was configured
  */
 data class MaintenanceResult(
     val consolidation: ConsolidationResult?,
     val abstractions: List<Proposition>,
     val superseded: List<Proposition>,
     val retired: List<Proposition>,
+    val collectorResult: CollectorRunResult? = null,
 ) {
     /** Total number of propositions persisted (promoted + reinforced + merged + abstractions + superseded status changes) */
     val totalPersisted: Int
@@ -81,7 +83,7 @@ interface MemoryMaintenanceOrchestrator {
     ): MaintenanceResult
 
     /**
-     * Builder intermediate: requires a consolidator before producing the orchestrator.
+     * Intermediate builder step — call [withConsolidator] to get a usable orchestrator.
      */
     class NeedsConsolidator internal constructor(
         private val repository: PropositionRepository,
@@ -95,7 +97,7 @@ interface MemoryMaintenanceOrchestrator {
 
     companion object {
         /**
-         * Start building a MemoryMaintenanceOrchestrator with the given repository.
+         * Start building a [MemoryMaintenanceOrchestrator] backed by the given repository.
          */
         @JvmStatic
         fun withRepository(repository: PropositionRepository): NeedsConsolidator =
