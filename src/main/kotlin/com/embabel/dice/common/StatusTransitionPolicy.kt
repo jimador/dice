@@ -27,8 +27,8 @@ import com.embabel.dice.proposition.PropositionStatus
  * should this proposition be in?" (policy) from "what is its current state?" (the label).
  *
  * Implementations are stateless and are invoked per-proposition by a sweep
- * (see [com.embabel.dice.proposition.DecaySweeper], implemented in a later phase).
- * Return `null` to indicate that no transition is needed.
+ * (see [com.embabel.dice.proposition.DecaySweeper]). Return `null` to indicate
+ * that no transition is needed.
  *
  * Consumers may supply their own implementations to handle domain-specific staleness
  * signals (e.g. a schema-version policy) without editing DICE core.
@@ -72,17 +72,15 @@ fun interface StatusTransitionPolicy {
  * ```
  * With the default weights of 0.0, utility reduces to plain decayed effective confidence.
  *
- * Note: this is a sweep-time approximation. Folding `reinforceCount` into
- * decay attenuation inside the reviser is the longer-term fix; until then the composite
- * above lets a consumer opt into reinforcement/importance weighting at sweep time.
+ * This composite is a sweep-time approximation: it lets a consumer opt into
+ * reinforcement/importance weighting at sweep time.
  *
- * **Recovery (STALE → ACTIVE) requires re-anchoring, which ships in a later phase.** Utility
+ * Recovery (STALE → ACTIVE) only fires when something re-anchors the proposition. Utility
  * is driven by [Proposition.effectiveConfidence], which decays monotonically against the
- * `contentRevised` anchor. With status transitions alone nothing re-anchors that timestamp, so the
- * recovery branch below cannot fire from the passage of time — it becomes reachable only
- * once the reviser's STALE-revival path refreshes `contentRevised` (and/or
- * raises confidence) on reinforcement. The branch is retained now so the policy contract
- * is complete and revival works without editing this class once that path lands.
+ * `contentRevised` anchor, so the recovery branch below cannot fire from the passage of time
+ * alone — it becomes reachable when a reviser refreshes `contentRevised` (and/or raises
+ * confidence) on reinforcement. The branch is included so the policy contract is complete:
+ * revival works as soon as such a re-anchoring path runs.
  *
  * @property stalenessThreshold ACTIVE propositions with utility strictly below this become STALE.
  * @property recoveryThreshold STALE propositions with utility strictly above this become ACTIVE.

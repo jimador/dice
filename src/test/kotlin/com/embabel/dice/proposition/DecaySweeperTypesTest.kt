@@ -29,9 +29,6 @@ import org.junit.jupiter.api.Test
  * Behavioral surface tests for the [DecaySweeper] extension point: the config
  * defaults that downstream forgetting/consolidation work depends on, and the
  * sealed result type that callers must be able to exhaustively branch over.
- *
- * The sweeper implementation itself is intentionally deferred to a later phase;
- * this asserts the stable type surface delivered now.
  */
 class DecaySweeperTypesTest {
 
