@@ -30,31 +30,32 @@ import com.embabel.dice.common.resolver.searcher.DefaultCandidateSearchers
 import org.slf4j.LoggerFactory
 
 /**
- * Resolution level indicating which strategy resolved an entity.
- * Lower levels are faster/cheaper; higher levels use more resources.
+ * Which strategy successfully resolved an entity. Lower levels are faster and cheaper;
+ * higher levels pull in the LLM.
  */
 enum class ResolutionLevel {
-    /** Exact name match in repository - no LLM */
+    /** Exact name match against the repository — no LLM needed. */
     EXACT_MATCH,
 
-    /** Heuristic match strategies (normalized, fuzzy) - no LLM */
+    /** Heuristic strategies (normalized name, fuzzy) — no LLM needed. */
     HEURISTIC_MATCH,
 
-    /** High-confidence embedding similarity - no LLM */
+    /** High-confidence embedding similarity — no LLM needed. */
     EMBEDDING_MATCH,
 
-    /** Simple yes/no LLM verification */
+    /** Single-candidate LLM yes/no verification. */
     LLM_VERIFICATION,
 
-    /** Full LLM comparison of multiple candidates */
+    /** LLM picks the best match from several candidates. */
     LLM_BAKEOFF,
 
-    /** No match found at any level */
+    /** No match found at any level. */
     NO_MATCH,
 }
 
 /**
- * Result of a resolution attempt at a specific level.
+ * The outcome of a single resolution attempt, including which level resolved it
+ * and how many candidates were considered.
  */
 data class LevelResult(
     val level: ResolutionLevel,
@@ -64,28 +65,26 @@ data class LevelResult(
 )
 
 /**
- * Entity resolver that escalates through a chain of [CandidateSearcher]s,
- * stopping as soon as a confident match is found.
+ * Entity resolver that walks a chain of [CandidateSearcher]s from cheapest to most
+ * expensive, stopping as soon as one returns a confident match. If no searcher is
+ * confident, the accumulated candidates go to an optional LLM bakeoff; if that also
+ * finds nothing, a new entity is minted (or vetoed if the schema forbids creation).
  *
- * Architecture:
- * - Each [CandidateSearcher] performs its own search and returns candidates
- * - If a searcher returns a confident match, resolution stops early
- * - Otherwise, candidates are accumulated for LLM arbitration
- * - LLM is the final candidateBakeoff, receiving all accumulated candidates
+ * Default search order:
+ * 1. Exact name match — instant, no LLM
+ * 2. Full-text / heuristic match — fast, no LLM
+ * 3. Embedding similarity — moderate cost, no LLM
+ * 4. LLM arbitration — only for genuinely ambiguous cases
  *
- * Default search order (cheapest first):
- * 1. **Exact Match**: Direct ID/name lookup - instant, no LLM
- * 2. **Text Search**: Full-text search with heuristic matching - fast, no LLM
- * 3. **Vector Search**: High-confidence embedding similarity - moderate, no LLM
- * 4. **LLM Arbitration**: If no confident match, LLM decides from all candidates
+ * This is the recommended resolver for production. For dev/seed scenarios where you
+ * never need to match against existing nodes, [AlwaysCreateEntityResolver] is simpler.
+ * Use the [create][Companion.create] factory for the full chain (including vector search)
+ * or [withoutVector][Companion.withoutVector] for stores without a vector index.
  *
- * This approach minimizes LLM calls by handling easy cases with fast searchers
- * and only escalating to LLM for genuinely ambiguous resolutions.
- *
- * @param searchers The candidate searchers, ordered cheapest-first
- * @param candidateBakeoff Optional candidateBakeoff to select best match when no confident match found (if null, creates new entity)
- * @param contextCompressor Optional compressor for reducing context size in candidateBakeoff calls
- * @param config Configuration for behavior
+ * @param searchers Candidate searchers in cheapest-first order
+ * @param candidateBakeoff Optional LLM selector used when no searcher is confident; if null, a new entity is created
+ * @param contextCompressor Optional compressor to trim source text before passing it to the bakeoff
+ * @param config Behavior toggles, e.g. forcing heuristic-only mode
  */
 class EscalatingEntityResolver(
     private val searchers: List<CandidateSearcher>,
@@ -95,12 +94,10 @@ class EscalatingEntityResolver(
 ) : EntityResolver {
 
     /**
-     * Configuration for escalating resolution behavior.
+     * Behavior toggles for the escalating resolver.
      */
     data class Config(
-        /**
-         * Skip LLM entirely - use only searchers.
-         */
+        /** When true, the LLM bakeoff is never called — resolution stops at the searcher tier. */
         val heuristicOnly: Boolean = false,
     )
 
@@ -137,7 +134,7 @@ class EscalatingEntityResolver(
     }
 
     /**
-     * Resolve a single entity, escalating through searchers until confident.
+     * Try to resolve one entity, walking searchers cheapest-first and stopping at the first confident hit.
      */
     private fun resolveWithEscalation(
         suggested: SuggestedEntity,
@@ -252,10 +249,10 @@ class EscalatingEntityResolver(
 
     companion object {
         /**
-         * Create an escalating resolver with default searchers.
+         * Build a resolver with the full default searcher chain (exact → heuristic → vector → LLM).
          *
-         * @param repository The entity repository for search operations
-         * @param candidateBakeoff Optional bakeoff to select best match when no confident match found
+         * @param repository Entity repository used by the searchers
+         * @param candidateBakeoff Optional LLM selector for ambiguous cases; null means mint a new entity
          */
         @JvmStatic
         fun create(
@@ -270,10 +267,11 @@ class EscalatingEntityResolver(
         }
 
         /**
-         * Create an escalating resolver without vector search.
+         * Build a resolver without the vector/embedding searcher — useful when the store
+         * has no vector index.
          *
-         * @param repository The entity repository for search operations
-         * @param candidateBakeoff Optional bakeoff to select best match when no confident match found
+         * @param repository Entity repository used by the searchers
+         * @param candidateBakeoff Optional LLM selector for ambiguous cases; null means mint a new entity
          */
         @JvmStatic
         fun withoutVector(
