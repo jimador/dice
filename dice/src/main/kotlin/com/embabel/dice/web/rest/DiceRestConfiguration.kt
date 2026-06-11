@@ -19,10 +19,13 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
 
 /**
- * Configuration to enable DICE REST API controllers.
- * Import this configuration in your application to expose the DICE REST endpoints.
+ * Opt-in Spring configuration that activates all DICE REST controllers.
  *
- * Example:
+ * Import this in your application config to expose the proposition extraction, memory, and
+ * discovery endpoints. Nothing is component-scanned — the controllers only activate when this
+ * class is imported AND the required beans (PropositionPipeline, PropositionStore, etc.) are
+ * present.
+ *
  * ```java
  * @Configuration
  * @Import(DiceRestConfiguration.class)
@@ -33,5 +36,6 @@ import org.springframework.context.annotation.Import
 @Import(
     PropositionPipelineController::class,
     MemoryController::class,
+    DiscoveryController::class,
 )
 class DiceRestConfiguration
