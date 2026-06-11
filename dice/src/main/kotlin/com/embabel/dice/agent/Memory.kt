@@ -26,6 +26,7 @@ import com.embabel.dice.projection.memory.support.DefaultMemoryProjector
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.proposition.PropositionStatus
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
 import java.util.function.UnaryOperator
@@ -137,9 +138,7 @@ data class Memory @JvmOverloads constructor(
     override val description: String
         get() = "Memories about $topic"
 
-    /**
-     * Set the topic description for the memories.
-     */
+    /** Describe what these memories are about — completes the phrase "memories about <topic>". */
     fun withTopic(topic: String): Memory = copy(topic = topic)
 
     fun withUseWhen(useWhen: String): Memory = copy(useWhen = useWhen)
@@ -183,8 +182,12 @@ data class Memory @JvmOverloads constructor(
      * Applies contextId, minConfidence, and any narrowing.
      */
     private fun baseQuery(): PropositionQuery {
+        // Scope retrieval to ACTIVE so STALE/SUPERSEDED/CONTRADICTED never
+        // reach LLM context by default. Applied before narrowedBy so a consumer
+        // can still explicitly widen the status set via the narrowing operator.
         val base = PropositionQuery.forContextId(contextId)
             .withMinEffectiveConfidence(minConfidence)
+            .withStatuses(setOf(PropositionStatus.ACTIVE))
         return narrowedBy?.apply(base) ?: base
     }
 
@@ -280,20 +283,17 @@ data class Memory @JvmOverloads constructor(
         }
 
     /**
-     * Set the projector for categorizing memories by knowledge type.
+     * Override the projector used to classify memories by knowledge type.
      *
-     * @param projector The projector to use
-     * @return New Memory with updated projector
+     * @param projector the projector to use
      */
     fun withProjector(projector: MemoryProjector): Memory =
         copy(projector = projector)
 
     /**
-     * Set the minimum confidence threshold for returned memories.
-     * Memories with effective confidence below this are filtered out.
+     * Only surface memories whose effective confidence is at least this high.
      *
-     * @param minConfidence Minimum confidence (0.0 to 1.0, default 0.5)
-     * @return New Memory with updated confidence
+     * @param minConfidence threshold between 0.0 and 1.0 (default [DEFAULT_MIN_CONFIDENCE])
      */
     fun withMinConfidence(minConfidence: Double): Memory {
         require(minConfidence in 0.0..1.0) { "minConfidence must be between 0.0 and 1.0" }
@@ -301,10 +301,9 @@ data class Memory @JvmOverloads constructor(
     }
 
     /**
-     * Set the default limit for search results.
+     * Cap the number of results returned by a single tool call.
      *
-     * @param limit Default maximum results (default 10)
-     * @return New Memory with updated limit
+     * @param limit maximum results per call; must be positive (default [DEFAULT_LIMIT])
      */
     fun withDefaultLimit(limit: Int): Memory {
         require(limit > 0) { "limit must be positive" }
@@ -425,33 +424,31 @@ data class Memory @JvmOverloads constructor(
         private val objectMapper = jacksonObjectMapper()
 
         /**
-         * Start creating a Memory for the given context.
+         * Start building a Memory scoped to the given context.
          *
-         * @param contextId The context to search within
-         * @return Step requiring a repository
+         * @param contextId the context to search within
+         * @return builder step that requires a repository
          */
         @JvmStatic
         fun forContext(contextId: ContextId): WithContext = WithContext(contextId)
 
         /**
-         * Start creating a Memory for the given context (Java-friendly).
+         * Start building a Memory scoped to the given context (Java-friendly string overload).
          *
-         * @param contextIdValue The context ID string value
-         * @return Step requiring a repository
+         * @param contextIdValue the context id string
+         * @return builder step that requires a repository
          */
         @JvmStatic
         fun forContext(contextIdValue: String): WithContext = WithContext(ContextId(contextIdValue))
     }
 
-    /**
-     * Step: context is set, repository required.
-     */
+    /** Builder step: context is fixed, wire the repository to complete construction. */
     class WithContext internal constructor(private val contextId: ContextId) {
 
         /**
-         * Set the proposition repository to search.
+         * Wire the proposition repository and return a ready-to-use Memory.
          *
-         * @param repository The repository containing propositions
+         * @param repository the repository to search
          * @return Memory ready to use or configure further
          */
         fun withRepository(repository: PropositionRepository): Memory =
