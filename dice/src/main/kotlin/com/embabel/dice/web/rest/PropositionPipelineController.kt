@@ -41,8 +41,16 @@ import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
 
 /**
- * REST controller for proposition extraction pipeline operations.
- * Handles text processing and proposition extraction.
+ * REST controller that runs the proposition extraction pipeline over text or uploaded files.
+ *
+ * Exposes two endpoints under `/api/v1/contexts/{contextId}`:
+ * - `POST /extract` — send raw text, get back propositions and entity resolutions
+ * - `POST /extract/file` — upload a document (PDF, Word, Markdown, HTML, etc.) and get back
+ *   per-chunk results aggregated into a single summary
+ *
+ * Not component-scanned: activate via [DiceRestConfiguration]. Requires a [PropositionPipeline]
+ * bean to be present. The context id comes exclusively from the path variable; it is never read
+ * from the request body.
  */
 @RestController
 @RequestMapping("/api/v1/contexts/{contextId}")
@@ -62,7 +70,10 @@ class PropositionPipelineController(
     private val logger = LoggerFactory.getLogger(PropositionPipelineController::class.java)
 
     /**
-     * Extract propositions from text chunk.
+     * Extract propositions from a single text chunk.
+     *
+     * Runs the extraction pipeline on the supplied text, persists the resulting propositions,
+     * and returns them together with entity resolution and revision summaries.
      */
     @PostMapping("/extract")
     fun extract(
@@ -88,8 +99,11 @@ class PropositionPipelineController(
     }
 
     /**
-     * Extract propositions from an uploaded file.
-     * Supports PDF, Word, Markdown, HTML, and other formats via Apache Tika.
+     * Extract propositions from an uploaded document.
+     *
+     * Parses the file with Apache Tika (PDF, Word, Markdown, HTML, and more), chunks it, runs
+     * each chunk through the extraction pipeline, persists the propositions, and returns an
+     * aggregated summary across all chunks.
      */
     @PostMapping("/extract/file", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
     fun extractFromFile(
@@ -142,7 +156,12 @@ class PropositionPipelineController(
         // Aggregate results
         val allPropositions = chunkResults.flatMap { it.propositions }
         val allRevisions = chunkResults.flatMap { it.revisionResults }
-        val allResolutions = chunkResults.flatMap { it.entityResolutions.resolutions }
+        // Failed chunks contribute zero resolutions to the aggregate response:
+        // entityResolutions is a Success-only field, and Failed returns empty propositions/
+        // revisionResults via the interface, so the :143-144 flatMaps already exclude them.
+        val allResolutions = chunkResults
+            .filterIsInstance<ChunkPropositionResult.Success>()
+            .flatMap { it.entityResolutions.resolutions }
 
         val resolvedIds = allResolutions.mapNotNull { resolution ->
             when (resolution) {
@@ -230,6 +249,21 @@ class PropositionPipelineController(
         contextId: String,
         result: ChunkPropositionResult,
     ): ExtractResponse {
+        // entityResolutions is a Success-only field; a Failed chunk yields an empty response
+        // carrying the failed chunkId.
+        if (result !is ChunkPropositionResult.Success) {
+            return ExtractResponse(
+                chunkId = chunkId,
+                contextId = contextId,
+                propositions = emptyList(),
+                entities = EntitySummary(
+                    created = emptyList(),
+                    resolved = emptyList(),
+                    failed = listOf(result.chunkId),
+                ),
+                revision = null,
+            )
+        }
         val resolvedIds = result.entityResolutions.resolutions
             .mapNotNull { resolution ->
                 when (resolution) {

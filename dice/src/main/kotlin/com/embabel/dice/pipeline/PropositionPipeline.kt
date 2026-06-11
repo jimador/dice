@@ -17,7 +17,16 @@ package com.embabel.dice.pipeline
 
 import com.embabel.agent.rag.model.Chunk
 import com.embabel.dice.common.ContentHasher
+import com.embabel.dice.common.DiceEventListener
+import com.embabel.dice.common.ExtractionBatchCompleted
+import com.embabel.dice.common.PropositionContradicted
+import com.embabel.dice.common.PropositionDiscovered
+import com.embabel.dice.common.PropositionGeneralized
+import com.embabel.dice.common.PropositionMerged
+import com.embabel.dice.common.PropositionReinforced
+import com.embabel.dice.common.SafeDiceEventListener
 import com.embabel.dice.common.SourceAnalysisContext
+import com.embabel.dice.common.SuggestedEntities
 import com.embabel.dice.common.filter.MentionFilter
 import com.embabel.dice.common.resolver.ChainedEntityResolver
 import com.embabel.dice.common.resolver.InMemoryEntityResolver
@@ -29,6 +38,7 @@ import com.embabel.dice.incremental.HashKey
 import com.embabel.dice.incremental.ProcessedChunkRecord
 import com.embabel.dice.proposition.PropositionExtractor
 import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.proposition.SuggestedPropositions
 import com.embabel.dice.proposition.revision.PropositionReviser
 import com.embabel.dice.proposition.revision.RevisionResult
 import org.slf4j.LoggerFactory
@@ -37,6 +47,17 @@ import java.time.Instant
 /**
  * Pipeline for extracting propositions from chunks.
  * Coordinates extraction and entity resolution.
+ *
+ * ## Construction
+ *
+ * There is no public constructor. The only entry point is the companion factory
+ * [withExtractor], which seeds a pipeline with a [PropositionExtractor]. From there,
+ * configure the pipeline with the fluent copy-builders, each of which returns a new
+ * instance:
+ * - [withRevision] — compare new propositions against existing ones
+ * - [withMentionFilter] — drop low-quality entity mentions before resolution
+ * - [withEventListener] — observe pipeline events
+ * - [withExecutionStrategy] — control how the extraction phase is dispatched
  *
  * Example usage:
  * ```kotlin
@@ -47,28 +68,44 @@ import java.time.Instant
  * val result = pipeline.process(chunks, context)
  * ```
  *
- * This pipeline does NOT persist anything. It returns a [PropositionResults]
- * containing all extracted entities and propositions. The caller is responsible for
- * persisting these to the appropriate repositories.
+ * ## This pipeline does NOT persist anything
+ *
+ * [process], [processChunk], and [processOnce] all return **UNSAVED** results. The pipeline
+ * writes nothing to any repository on its own. To make results durable, the caller MUST
+ * persist them explicitly via
+ * [PersistablePropositions.persist][PersistablePropositions.persist], passing a
+ * `propositionRepository` and a `namedEntityDataRepository`, within the caller's own
+ * transaction scope. If you do not call `persist`, nothing is stored — the returned result
+ * is discarded when it goes out of scope.
  *
  * When a [PropositionReviser] is configured with a [PropositionRepository], the pipeline
  * will compare new propositions against existing ones and classify them as new, merged,
- * reinforced, or contradicted.
+ * reinforced, or contradicted. Revision still does not persist — the classified results
+ * must be persisted by the caller as above.
  */
 class PropositionPipeline private constructor(
     private val extractor: PropositionExtractor,
     private val reviser: PropositionReviser? = null,
     private val propositionRepository: PropositionRepository? = null,
     private val mentionFilter: MentionFilter? = null,
+    eventListener: DiceEventListener = DiceEventListener.DEV_NULL,
+    private val executionStrategy: ExtractionExecutionStrategy = SerialExtractionStrategy,
 ) {
+
+    /** The original listener as supplied — propagated verbatim through `with*` copies to avoid wrapping it multiple times. */
+    private val rawEventListener: DiceEventListener = eventListener
+
+    /** The listener used for all emissions, wrapped in [SafeDiceEventListener] so a throwing listener can never abort a run. */
+    private val eventListener: DiceEventListener = SafeDiceEventListener(eventListener)
 
     companion object {
 
         /**
-         * Create a new pipeline with the given extractor.
+         * Starting point for building a pipeline — seed it with a [PropositionExtractor], then
+         * chain additional configuration via the `with*` methods.
          *
-         * @param extractor The proposition extractor to use
-         * @return A new pipeline instance
+         * @param extractor the extractor to use for proposition extraction
+         * @return a new pipeline instance
          */
         @JvmStatic
         fun withExtractor(extractor: PropositionExtractor): PropositionPipeline =
@@ -89,7 +126,7 @@ class PropositionPipeline private constructor(
      * @return A new pipeline instance with revision enabled
      */
     fun withRevision(reviser: PropositionReviser, propositionRepository: PropositionRepository): PropositionPipeline =
-        PropositionPipeline(extractor, reviser, propositionRepository, mentionFilter)
+        PropositionPipeline(extractor, reviser, propositionRepository, mentionFilter, rawEventListener, executionStrategy)
 
     /**
      * Add a mention filter to validate entity mentions before creating entities.
@@ -100,26 +137,57 @@ class PropositionPipeline private constructor(
      * @return A new pipeline instance with mention filtering enabled
      */
     fun withMentionFilter(filter: MentionFilter): PropositionPipeline =
-        PropositionPipeline(extractor, reviser, propositionRepository, filter)
+        PropositionPipeline(extractor, reviser, propositionRepository, filter, rawEventListener, executionStrategy)
 
     /**
-     * Process a single chunk through the pipeline.
-     * Extracts propositions and resolves entities.
+     * Register a listener for pipeline events.
      *
-     * If a reviser is configured, propositions are compared against existing ones
-     * and classified. Otherwise, propositions are returned without revision.
+     * When set, [process] emits one aggregate [ExtractionBatchCompleted] per run, and — when a
+     * reviser is also configured — [processChunk] emits one per-proposition "candidate" event per
+     * [RevisionResult] (revision-only). These candidate events are **pre-persistence** signals:
+     * the canonical durable signal is `PropositionPersisted`, emitted by the repository decorator.
      *
-     * Note: This method does NOT persist anything. The caller should persist
-     * entities and propositions from the returned result.
+     * Defaults to [DiceEventListener.DEV_NULL]; behavior is unchanged when no listener is set.
      *
-     * @param chunk The chunk to process
-     * @param context Configuration including schema and entity resolver
-     * @return Processing result with propositions, entities, and optional revision results
+     * @param listener The listener to receive [com.embabel.dice.common.DiceEvent]s
+     * @return A new pipeline instance with the listener registered
      */
-    fun processChunk(
-        chunk: Chunk,
-        context: SourceAnalysisContext,
-    ): ChunkPropositionResult {
+    fun withEventListener(listener: DiceEventListener): PropositionPipeline =
+        PropositionPipeline(extractor, reviser, propositionRepository, mentionFilter, listener, executionStrategy)
+
+    /**
+     * Set the [ExtractionExecutionStrategy] used to dispatch the stateless per-chunk
+     * extraction phase of [process].
+     *
+     * Defaults to [SerialExtractionStrategy] (zero behavior change vs. the pre-strategy
+     * pipeline). [ParallelExtractionStrategy] and [BatchedExtractionStrategy] only affect
+     * Phase 1 (extraction); the resolver-touching Phase 2 always stays serial, so
+     * cross-chunk entity identity is preserved regardless of strategy.
+     *
+     * Enabling Parallel/Batched(`batchSize > 1`) in production is gated on verifying extractor
+     * thread-safety — see [ExtractionExecutionStrategy] for the thread-safety verification requirement.
+     *
+     * @param strategy the execution strategy to use
+     * @return A new pipeline instance with the strategy registered
+     */
+    fun withExecutionStrategy(strategy: ExtractionExecutionStrategy): PropositionPipeline =
+        PropositionPipeline(extractor, reviser, propositionRepository, mentionFilter, rawEventListener, strategy)
+
+    /**
+     * Carries the resolver-free output of Phase 1 for a single chunk so it can be produced
+     * concurrently. Phase 2 picks this up serially to do entity resolution. See [process].
+     */
+    private data class ExtractionPhaseResult(
+        val chunk: Chunk,
+        val suggestedPropositions: SuggestedPropositions,
+        val suggestedEntities: SuggestedEntities,
+    )
+
+    /**
+     * Phase 1 — extract propositions and convert mentions to suggested entities.
+     * Touches no entity resolver, so it is safe to run concurrently across chunks.
+     */
+    private fun extractPhase(chunk: Chunk, context: SourceAnalysisContext): ExtractionPhaseResult {
         logger.debug("Processing chunk: {}", chunk.id)
 
         // Step 1: Extract propositions from chunk
@@ -133,8 +201,21 @@ class PropositionPipeline private constructor(
             chunk.text,
             mentionFilter
         )
-
         logger.debug("Created {} suggested entities", suggestedEntities.suggestedEntities.size)
+
+        return ExtractionPhaseResult(chunk, suggestedPropositions, suggestedEntities)
+    }
+
+    /**
+     * Phase 2 — resolve entities through the shared cross-chunk resolver, apply resolutions,
+     * and optionally revise against existing propositions. Must stay serial so all chunks share
+     * the same entity identity within a single [process] run.
+     */
+    private fun resolvePhase(
+        extraction: ExtractionPhaseResult,
+        context: SourceAnalysisContext,
+    ): ChunkPropositionResult.Success {
+        val (chunk, suggestedPropositions, suggestedEntities) = extraction
 
         // Step 3: Resolve entities using existing resolver (wrapped with known entities)
         val resolver = KnownEntityResolver.withKnownEntities(context.knownEntities, context.entityResolver)
@@ -156,12 +237,32 @@ class PropositionPipeline private constructor(
                 results.count { it is RevisionResult.Reinforced },
                 results.count { it is RevisionResult.Contradicted },
             )
+            // Emit one pre-persistence candidate event per RevisionResult (revision-only).
+            // These are early signals; the canonical durable event is PropositionPersisted,
+            // emitted by the repository decorator when the result is actually saved.
+            results.forEach { revision ->
+                val event = when (revision) {
+                    is RevisionResult.New -> PropositionDiscovered(revision.proposition)
+                    is RevisionResult.Merged -> PropositionMerged(revision.original, revision.revised)
+                    is RevisionResult.Reinforced -> PropositionReinforced(revision.original, revision.revised)
+                    is RevisionResult.Contradicted -> PropositionContradicted(
+                        revision.original.contextId,
+                        revision.original,
+                        revision.new,
+                    )
+                    is RevisionResult.Generalized -> PropositionGeneralized(
+                        revision.proposition,
+                        revision.generalizes,
+                    )
+                }
+                eventListener.onEvent(event)
+            }
             results
         } else {
             emptyList()
         }
 
-        return ChunkPropositionResult(
+        return ChunkPropositionResult.Success(
             chunkId = chunk.id,
             suggestedPropositions = suggestedPropositions,
             entityResolutions = resolutions,
@@ -169,6 +270,32 @@ class PropositionPipeline private constructor(
             revisionResults = revisionResults,
         )
     }
+
+    /**
+     * Process a single chunk through the pipeline.
+     * Extracts propositions and resolves entities.
+     *
+     * If a reviser is configured, propositions are compared against existing ones
+     * and classified. Otherwise, propositions are returned without revision.
+     *
+     * Note: This method does NOT persist anything — it returns UNSAVED results. The caller
+     * must persist the returned entities and propositions via
+     * [PersistablePropositions.persist][PersistablePropositions.persist] within its own
+     * transaction scope; nothing is written to any repository otherwise.
+     *
+     * Single-chunk semantics are unchanged: this runs Phase 1 then Phase 2 serially on the
+     * calling thread and propagates any extraction exception (it never produces a
+     * [ChunkPropositionResult.Failed] — only the batch [process] does, per A3).
+     *
+     * @param chunk The chunk to process
+     * @param context Configuration including schema and entity resolver
+     * @return Processing result with propositions, entities, and optional revision results
+     */
+    fun processChunk(
+        chunk: Chunk,
+        context: SourceAnalysisContext,
+    ): ChunkPropositionResult =
+        resolvePhase(extractPhase(chunk, context), context)
 
     /**
      * Process a text once, with hash-based deduplication.
@@ -180,6 +307,11 @@ class PropositionPipeline private constructor(
      * @param historyStore Tracks what's been processed; null to skip dedup
      * @param contentHasher Strategy for computing content hashes
      * @return Result with propositions and entities, or null if already processed
+     *
+     * Note: This method does NOT persist anything — it returns UNSAVED results. The caller
+     * must persist the returned entities and propositions via
+     * [PersistablePropositions.persist][PersistablePropositions.persist] within its own
+     * transaction scope; nothing is written to any repository otherwise.
      */
     @JvmOverloads
     fun processOnce(
@@ -248,8 +380,41 @@ class PropositionPipeline private constructor(
         )
         val crossChunkContext = context.copy(entityResolver = crossChunkResolver)
 
-        val chunkResults = chunks.map { chunk ->
-            processChunk(chunk, crossChunkContext)
+        // Phase 1 — resolver-free extraction, dispatched via the execution strategy (parallelizable).
+        // A failed extraction yields a null slot; input order is preserved by the strategy.
+        // Capture the cause per chunk so we can produce a typed Failed result in Phase 2.
+        val failures = HashMap<String, Throwable>()
+        val extractions: List<ExtractionPhaseResult?> =
+            executionStrategy.execute(chunks) { chunk ->
+                runCatching { extractPhase(chunk, crossChunkContext) }
+                    .getOrElse { e ->
+                        logger.warn("Extraction failed for chunk {}: {}", chunk.id, e.message, e)
+                        synchronized(failures) { failures[chunk.id] = e }
+                        throw e // let the strategy's runCatching map this to a null slot
+                    }
+            }
+
+        // Phase 2 — always serial, so all chunks share the same entity identity.
+        // Resolve each non-null extraction through the shared crossChunkResolver; map null
+        // slots to typed ChunkPropositionResult.Failed.
+        val chunkResults: List<ChunkPropositionResult> = extractions.mapIndexed { i, extraction ->
+            val chunkId = chunks[i].id
+            if (extraction != null) {
+                // Isolate per-chunk: a throw in resolution, revision, or event emission surfaces
+                // as a Failed result for this chunk only, never aborting the whole run.
+                runCatching { resolvePhase(extraction, crossChunkContext) }
+                    .getOrElse { e ->
+                        logger.warn("Resolution failed for chunk {}: {}", chunkId, e.message, e)
+                        ChunkPropositionResult.failed(chunkId, e)
+                    }
+            } else {
+                val cause = failures[chunkId]
+                if (cause != null) {
+                    ChunkPropositionResult.failed(chunkId, cause)
+                } else {
+                    ChunkPropositionResult.Failed(chunkId, "Extraction failed")
+                }
+            }
         }
 
         val allPropositions = chunkResults.flatMap { it.propositions }
@@ -281,34 +446,38 @@ class PropositionPipeline private constructor(
             )
         }
 
+        // Emit exactly one aggregate event per process() carrying the run's stats.
+        eventListener.onEvent(ExtractionBatchCompleted(result.propositionExtractionStats))
+
         return result
     }
 }
 
 /**
- * Merge [ids] into the `grounding` of every proposition this result will
- * persist — both the plain extracted list and, when revision ran, the
- * revised propositions actually saved (`revisedPropositionsToPersist`).
+ * Adds [ids] to the grounding of every proposition this result will persist — both the
+ * plain extracted list and, when revision ran, the revised propositions that will actually
+ * be saved.
  *
- * Used by [PropositionPipeline.processOnce]'s `additionalGrounding` to let a
- * caller ground an answer in the source records it came from, on top of the
- * primary `sourceId`. Grounding ids that resolve to a stored entity become
- * `(:Proposition)-[:GROUNDED_IN]->(:entity)` edges in the downstream grounding
- * pass — the same mechanism the primary `sourceId` already uses. No-op for an
- * empty list (the back-compat default).
+ * Used by [PropositionPipeline.processOnce]'s `additionalGrounding` so callers can attach
+ * the source records a proposition came from, beyond the primary `sourceId`. Grounding ids
+ * that resolve to a stored entity become `GROUNDED_IN` edges in the downstream provenance
+ * pass, using the same mechanism as the primary `sourceId`. No-op when the list is empty.
  */
 internal fun ChunkPropositionResult.withAdditionalGrounding(ids: List<String>): ChunkPropositionResult =
     if (ids.isEmpty()) this
-    else copy(
-        propositions = propositions.map { it.withGrounding(ids) },
-        revisionResults = revisionResults.map { it.withAdditionalGrounding(ids) },
-    )
+    else when (this) {
+        // Only a successful result carries propositions to ground; Failed has nothing to enrich.
+        is ChunkPropositionResult.Success -> copy(
+            propositions = propositions.map { it.withGrounding(ids) },
+            revisionResults = revisionResults.map { it.withAdditionalGrounding(ids) },
+        )
+        is ChunkPropositionResult.Failed -> this
+    }
 
 /**
- * Add grounding to the proposition(s) a [RevisionResult] persists. Only the
- * proposition sourced from THIS text is enriched — a `Contradicted`'s
- * pre-existing `original` (whose confidence is merely reduced) keeps its own
- * provenance.
+ * Adds grounding to the proposition(s) a [RevisionResult] will persist. Only the proposition
+ * sourced from the current text is enriched — a `Contradicted` result's pre-existing `original`
+ * (whose confidence is merely reduced) keeps its own provenance unchanged.
  */
 internal fun RevisionResult.withAdditionalGrounding(ids: List<String>): RevisionResult =
     if (ids.isEmpty()) this

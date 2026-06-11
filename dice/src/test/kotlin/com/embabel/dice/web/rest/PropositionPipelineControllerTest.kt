@@ -43,7 +43,10 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 
 /**
- * Tests for PropositionPipelineController.
+ * Contract tests for the proposition extraction REST controller.
+ *
+ * Verifies that the `/extract` endpoint runs the pipeline, persists propositions, and returns the
+ * expected JSON shape — using a mocked pipeline and an in-memory repository.
  */
 class PropositionPipelineControllerTest {
 
@@ -103,7 +106,7 @@ class PropositionPipelineControllerTest {
             confidence = 0.95,
         )
 
-        val mockResult = ChunkPropositionResult(
+        val mockResult = ChunkPropositionResult.Success(
             chunkId = "chunk-123",
             suggestedPropositions = SuggestedPropositions(
                 chunkId = "chunk-123",
@@ -169,7 +172,7 @@ class PropositionPipelineControllerTest {
             confidence = 0.9,
         )
 
-        val mockResult = ChunkPropositionResult(
+        val mockResult = ChunkPropositionResult.Success(
             chunkId = "chunk-456",
             suggestedPropositions = SuggestedPropositions(
                 chunkId = "chunk-456",

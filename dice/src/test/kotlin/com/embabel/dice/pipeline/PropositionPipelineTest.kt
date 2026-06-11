@@ -40,6 +40,9 @@ import com.embabel.dice.text2graph.builder.Person
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 private val testContextId = ContextId("test-context")
 
@@ -71,10 +74,11 @@ class TrackingEntityRepository(
 }
 
 /**
- * Tests for [PropositionPipeline] focusing on cross-chunk entity resolution.
+ * Tests for [PropositionPipeline], with emphasis on cross-chunk entity resolution.
  *
- * The pipeline wraps the context's EntityResolver with MultiEntityResolver + InMemoryEntityResolver
- * to enable entities discovered in earlier chunks to be recognized in later chunks.
+ * The pipeline wraps the context's EntityResolver with an InMemoryEntityResolver so entities
+ * discovered in earlier chunks are recognized in later ones within the same run, without any
+ * external persistence.
  */
 class PropositionPipelineTest {
 
@@ -87,6 +91,12 @@ class PropositionPipelineTest {
     private class MockPropositionExtractor : PropositionExtractor {
 
         override fun extract(chunk: Chunk, context: SourceAnalysisContext): SuggestedPropositions {
+            // Sentinel: a "fail:"-prefixed chunk simulates an extraction failure so the
+            // execution strategy's runCatching yields a null slot -> Phase 2 produces
+            // ChunkPropositionResult.Failed.
+            if (chunk.text.startsWith("fail:")) {
+                throw IllegalStateException("sentinel failure for ${chunk.id}")
+            }
             // Parse entities from chunk text: "mentions:Alice,Bob" -> [Alice, Bob]
             val text = chunk.text
             if (!text.startsWith("mentions:")) {
@@ -643,9 +653,7 @@ class PropositionPipelineTest {
         }
     }
 
-    /**
-     * Simple in-memory proposition repository for testing.
-     */
+    /** In-memory proposition store used by tests that need a real repository. */
     private class InMemoryPropositionRepository : PropositionRepository {
 
         private val propositions = mutableMapOf<String, Proposition>()
@@ -893,9 +901,7 @@ class PropositionPipelineTest {
         }
     }
 
-    /**
-     * Tests for structural relationship creation during persist.
-     */
+    /** Verifies that `persist` creates the expected structural relationships (HAS_PROPOSITION, MENTIONS, HAS_ENTITY). */
     @Nested
     inner class StructuralRelationshipTests {
 
@@ -1419,6 +1425,213 @@ class PropositionPipelineTest {
 
             // But proposition is still stored
             assertEquals(1, result.allPropositions.size)
+        }
+    }
+
+    /**
+     * Concurrency contract: ordering, per-chunk error isolation, and cross-chunk identity under
+     * the [ParallelExtractionStrategy] and [BatchedExtractionStrategy]. The test owns the
+     * [ExecutorService] and shuts it down; the library never does.
+     */
+    @Nested
+    inner class ExecutionStrategyTests {
+
+        private val executor: ExecutorService = Executors.newFixedThreadPool(4)
+
+        @org.junit.jupiter.api.AfterEach
+        fun tearDown() {
+            executor.shutdownNow()
+        }
+
+        private fun newPipeline(strategy: ExtractionExecutionStrategy) =
+            PropositionPipeline.withExtractor(MockPropositionExtractor()).withExecutionStrategy(strategy)
+
+        private fun context() = SourceAnalysisContext(
+            schema = schema,
+            entityResolver = AlwaysCreateEntityResolver,
+            contextId = testContextId,
+        )
+
+        private fun strategies(): List<ExtractionExecutionStrategy> = listOf(
+            ParallelExtractionStrategy(executor),
+            BatchedExtractionStrategy(batchSize = 2, executor = executor),
+        )
+
+        @Test
+        fun `failed chunk is isolated as Failed while good chunks succeed`() {
+            for (strategy in strategies()) {
+                val chunks = listOf(
+                    Chunk(id = "chunk-1", text = "mentions:Alice", metadata = emptyMap(), parentId = ""),
+                    Chunk(id = "chunk-2", text = "fail:boom", metadata = emptyMap(), parentId = ""),
+                    Chunk(id = "chunk-3", text = "mentions:Bob", metadata = emptyMap(), parentId = ""),
+                )
+
+                val result = newPipeline(strategy).process(chunks, context())
+
+                // Invariant: one result per input chunk, in order.
+                assertEquals(chunks.size, result.chunkResults.size)
+
+                // chunk-2 is Failed; the others are Success.
+                assertTrue(result.chunkResults[0] is ChunkPropositionResult.Success)
+                assertTrue(result.chunkResults[1] is ChunkPropositionResult.Failed)
+                assertTrue(result.chunkResults[2] is ChunkPropositionResult.Success)
+
+                // failedChunkIds carries exactly the failed chunk id.
+                assertEquals(listOf("chunk-2"), result.failedChunkIds)
+
+                // Good chunks still produced their entities.
+                val names = result.newEntities().map { it.name }.toSet()
+                assertTrue(names.contains("Alice"))
+                assertTrue(names.contains("Bob"))
+            }
+        }
+
+        @Test
+        fun `a chunk that fails during resolution is isolated as Failed`() {
+            // Phase 1 (extraction) succeeds for every chunk; the resolver throws for chunk-2
+            // during Phase 2 resolution. The run must still produce one result per chunk with
+            // chunk-2 surfaced as Failed — not abort and discard the good chunks' results.
+            val resolverThatThrowsOnBoom = object : EntityResolver {
+                override fun resolve(
+                    suggestedEntities: SuggestedEntities,
+                    schema: DataDictionary,
+                ): Resolutions<SuggestedEntityResolution> {
+                    if (suggestedEntities.suggestedEntities.any { it.name == "Boom" }) {
+                        throw IllegalStateException("resolution failed for Boom")
+                    }
+                    return AlwaysCreateEntityResolver.resolve(suggestedEntities, schema)
+                }
+            }
+            val failingResolveContext = SourceAnalysisContext(
+                schema = schema,
+                entityResolver = resolverThatThrowsOnBoom,
+                contextId = testContextId,
+            )
+
+            for (strategy in strategies()) {
+                val chunks = listOf(
+                    Chunk(id = "chunk-1", text = "mentions:Alice", metadata = emptyMap(), parentId = ""),
+                    Chunk(id = "chunk-2", text = "mentions:Boom", metadata = emptyMap(), parentId = ""),
+                    Chunk(id = "chunk-3", text = "mentions:Bob", metadata = emptyMap(), parentId = ""),
+                )
+
+                val result = newPipeline(strategy).process(chunks, failingResolveContext)
+
+                // Invariant: one result per input chunk, in order; the run did not abort.
+                assertEquals(chunks.size, result.chunkResults.size)
+                assertTrue(result.chunkResults[0] is ChunkPropositionResult.Success)
+                assertTrue(result.chunkResults[1] is ChunkPropositionResult.Failed)
+                assertTrue(result.chunkResults[2] is ChunkPropositionResult.Success)
+                assertEquals(listOf("chunk-2"), result.failedChunkIds)
+
+                // Good chunks still produced their entities despite the resolution failure.
+                val names = result.newEntities().map { it.name }.toSet()
+                assertTrue(names.contains("Alice"))
+                assertTrue(names.contains("Bob"))
+            }
+        }
+
+        @Test
+        fun `results preserve input order`() {
+            for (strategy in strategies()) {
+                val chunks = (0 until 10).map {
+                    Chunk(id = "chunk-$it", text = "mentions:E$it", metadata = emptyMap(), parentId = "")
+                }
+
+                val result = newPipeline(strategy).process(chunks, context())
+
+                assertEquals(chunks.size, result.chunkResults.size)
+                chunks.forEachIndexed { i, chunk ->
+                    assertEquals(chunk.id, result.chunkResults[i].chunkId, "Order mismatch at index $i")
+                }
+            }
+        }
+
+        @Test
+        fun `cross-chunk identity preserved under parallel and batched`() {
+            for (strategy in strategies()) {
+                val chunks = listOf(
+                    Chunk(id = "chunk-1", text = "mentions:Alice,Bob", metadata = emptyMap(), parentId = ""),
+                    Chunk(id = "chunk-2", text = "mentions:Alice,Charlie", metadata = emptyMap(), parentId = ""),
+                )
+
+                val result = newPipeline(strategy).process(chunks, context())
+
+                // 3 unique entities; Alice appears once in newEntities (resolved serially in Phase 2).
+                val newEntities = result.newEntities()
+                assertEquals(3, newEntities.size, "Found: ${newEntities.map { it.name }}")
+                assertEquals(1, newEntities.count { it.name == "Alice" })
+
+                // Every Alice mention resolves to the same id across chunks.
+                val aliceId = newEntities.first { it.name == "Alice" }.id
+                for (prop in result.allPropositions) {
+                    prop.mentions.find { it.span == "Alice" }?.let {
+                        assertEquals(aliceId, it.resolvedId, "All Alice mentions must share one id under $strategy")
+                    }
+                }
+            }
+        }
+
+        @Test
+        fun `default pipeline (no withExecutionStrategy) matches serial behavior`() {
+            // Oracle: the existing default-path tests assert serial behavior. Here we assert
+            // an explicit SerialExtractionStrategy yields identical results to the default.
+            val chunks = listOf(
+                Chunk(id = "chunk-1", text = "mentions:Alice", metadata = emptyMap(), parentId = ""),
+                Chunk(id = "chunk-2", text = "mentions:Alice", metadata = emptyMap(), parentId = ""),
+            )
+
+            val defaultResult = PropositionPipeline.withExtractor(MockPropositionExtractor())
+                .process(chunks, context())
+            val serialResult = newPipeline(SerialExtractionStrategy).process(chunks, context())
+
+            assertEquals(defaultResult.chunkResults.size, serialResult.chunkResults.size)
+            assertEquals(defaultResult.newEntities().size, serialResult.newEntities().size)
+            assertEquals(1, serialResult.newEntities().size)
+        }
+
+        @Test
+        fun `single-chunk processChunk still throws on a failing chunk (A3)`() {
+            val pipeline = PropositionPipeline.withExtractor(MockPropositionExtractor())
+            val failingChunk = Chunk(id = "chunk-x", text = "fail:boom", metadata = emptyMap(), parentId = "")
+
+            // processChunk does NOT isolate failure — it propagates (unlike process()).
+            assertThrows<IllegalStateException> {
+                pipeline.processChunk(failingChunk, context())
+            }
+        }
+
+        @Test
+        fun `default strategy and batched-size-one yield equivalent results under partial failure`() {
+            // Safe-path equivalence at the PIPELINE level: the default pipeline
+            // (Serial) and an explicit BatchedExtractionStrategy(1) must produce the same number
+            // of chunk results, the same Failed/Success classification per index, and the same
+            // failedChunkIds — proving Batched(1) is a true drop-in for the serial default.
+            val chunks = listOf(
+                Chunk(id = "chunk-1", text = "mentions:Alice", metadata = emptyMap(), parentId = ""),
+                Chunk(id = "chunk-2", text = "fail:boom", metadata = emptyMap(), parentId = ""),
+                Chunk(id = "chunk-3", text = "mentions:Bob", metadata = emptyMap(), parentId = ""),
+            )
+
+            val defaultResult = PropositionPipeline.withExtractor(MockPropositionExtractor())
+                .process(chunks, context())
+            val batched1Result = newPipeline(
+                BatchedExtractionStrategy(batchSize = 1, executor = executor)
+            ).process(chunks, context())
+
+            assertEquals(defaultResult.chunkResults.size, batched1Result.chunkResults.size)
+            assertEquals(defaultResult.failedChunkIds, batched1Result.failedChunkIds)
+            assertEquals(listOf("chunk-2"), batched1Result.failedChunkIds)
+
+            defaultResult.chunkResults.forEachIndexed { i, expected ->
+                val actual = batched1Result.chunkResults[i]
+                assertEquals(expected::class, actual::class, "classification mismatch at index $i")
+                assertEquals(expected.chunkId, actual.chunkId, "chunkId mismatch at index $i")
+            }
+            assertEquals(
+                defaultResult.newEntities().map { it.name }.toSet(),
+                batched1Result.newEntities().map { it.name }.toSet(),
+            )
         }
     }
 }
