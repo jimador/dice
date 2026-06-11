@@ -1,0 +1,225 @@
+/*
+ * Copyright 2024-2026 Embabel Pty Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.embabel.dice.projection.memory
+
+import com.embabel.agent.core.ContextId
+import com.embabel.dice.common.DiceEventListener
+import com.embabel.dice.common.PropositionStatusChanged
+import com.embabel.dice.projection.lineage.CollectorOutcome
+import com.embabel.dice.projection.lineage.CollectorRecord
+import com.embabel.dice.projection.lineage.CollectorRecordStore
+import com.embabel.dice.projection.lineage.CollectorRun
+import com.embabel.dice.proposition.Proposition
+import com.embabel.dice.proposition.PropositionQuery
+import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.proposition.PropositionStatus
+import org.slf4j.LoggerFactory
+import java.time.Instant
+import java.util.UUID
+
+/**
+ * Default [CollectorRunner] implementation.
+ *
+ * Fetches ACTIVE candidates once per run (so already-STALE or PROMOTED propositions are
+ * never re-selected), gathers marks from every configured [CollectorStrategy], then asks the
+ * [SweepPolicy] what to do with each marked proposition.
+ *
+ * Write behavior by entry point:
+ * - [collect] never touches the repository or record store.
+ * - [run] with `dryRun = true` saves an auditable run record but applies no status change and
+ *   emits no event.
+ * - [run] with `dryRun = false` applies each decision, saves the run record, then emits a
+ *   [PropositionStatusChanged] per applied transition.
+ *
+ * @param repository Proposition store to read candidates from and write transitions to.
+ * @param strategies Mark strategies run during the mark phase.
+ * @param policy Policy deciding each marked proposition's fate.
+ * @param recordStore Optional audit store; when null, no run record is saved.
+ * @param listener Notified after each applied transition; defaults to a no-op.
+ */
+class DefaultCollectorRunner(
+    private val repository: PropositionRepository,
+    private val strategies: List<CollectorStrategy>,
+    private val policy: SweepPolicy,
+    private val recordStore: CollectorRecordStore?,
+    private val listener: DiceEventListener,
+) : CollectorRunner {
+
+    private val logger = LoggerFactory.getLogger(DefaultCollectorRunner::class.java)
+
+    override fun collect(contextId: ContextId): CollectorRunResult {
+        val startedAt = Instant.now()
+        val (_, marks) = markPhase(contextId)
+        // Pure-read: no repository write, no run record. Nothing is persisted, so there is no run
+        // to cross-reference — the runId is blank to signal it is not queryable in any store.
+        return CollectorRunResult(
+            runId = EPHEMERAL_RUN_ID,
+            dryRun = false,
+            marks = marks,
+            applied = emptyList(),
+            skipped = emptyList(),
+            hardDeleted = emptyList(),
+            startedAt = startedAt,
+        )
+    }
+
+    override fun run(contextId: ContextId, dryRun: Boolean): CollectorRunResult {
+        val startedAt = Instant.now()
+        val runId = newRunId()
+        val (candidatesById, marks) = markPhase(contextId)
+        val marksByProposition = marks.groupBy { it.propositionId }
+
+        val applied = mutableListOf<PropositionMark>()
+        val skipped = mutableListOf<PropositionMark>()
+        val hardDeleted = mutableListOf<String>()
+        val records = mutableListOf<CollectorRecord>()
+
+        for ((propositionId, propMarks) in marksByProposition) {
+            val proposition = candidatesById[propositionId] ?: continue
+            when (val action = policy.decide(proposition, propMarks)) {
+                is SweepAction.TransitionStatus -> {
+                    if (dryRun) {
+                        // Would-be transition: record it, but mutate nothing, emit nothing, and
+                        // leave `applied` empty — `marks` already reflects what WOULD happen.
+                        records += records(propMarks, runId, CollectorOutcome.TRANSITIONED, proposition.status, action.newStatus)
+                    } else {
+                        applyTransition(proposition, action.newStatus, propMarks)
+                        applied.addAll(propMarks)
+                        records += records(propMarks, runId, CollectorOutcome.TRANSITIONED, proposition.status, action.newStatus)
+                    }
+                }
+
+                SweepAction.HardDelete -> {
+                    if (!dryRun) {
+                        repository.delete(proposition.id)
+                        // Only an actually-removed proposition is reported as hard-deleted; on a
+                        // dry run `hardDeleted` stays empty (the record still captures the preview).
+                        hardDeleted += proposition.id
+                    }
+                    records += records(propMarks, runId, CollectorOutcome.HARD_DELETED, proposition.status, null)
+                }
+
+                SweepAction.Skip -> {
+                    skipped.addAll(propMarks)
+                    records += records(propMarks, runId, CollectorOutcome.SKIPPED, proposition.status, null)
+                }
+            }
+        }
+
+        // Compute the finish instant once and thread it into both the persisted run header and
+        // the returned result, so the audit object and the summary agree on the finish time.
+        val finishedAt = Instant.now()
+        persistRun(runId, startedAt, finishedAt, dryRun, records)
+
+        return CollectorRunResult(
+            runId = runId,
+            dryRun = dryRun,
+            marks = marks,
+            applied = applied.toList(),
+            skipped = skipped.toList(),
+            hardDeleted = hardDeleted.toList(),
+            startedAt = startedAt,
+            finishedAt = finishedAt,
+        )
+    }
+
+    /**
+     * Fetches ACTIVE candidates once and runs every strategy over them.
+     * @return the candidates indexed by id, paired with all marks the strategies produced.
+     */
+    private fun markPhase(contextId: ContextId): Pair<Map<String, Proposition>, List<PropositionMark>> {
+        val candidates = repository.query(
+            PropositionQuery.forContextId(contextId).withStatus(PropositionStatus.ACTIVE),
+        )
+        val candidatesById = candidates.associateBy { it.id }
+        val marks = strategies.flatMap { it.mark(candidates, repository, contextId) }
+        return candidatesById to marks
+    }
+
+    /** Persist the swept transition, then emit the lifecycle event (persist-then-emit). */
+    private fun applyTransition(
+        proposition: Proposition,
+        newStatus: PropositionStatus,
+        propMarks: List<PropositionMark>,
+    ) {
+        val previousStatus = proposition.status
+        val saved = repository.save(proposition.withStatus(newStatus))
+        // Multiple strategies may mark the same proposition; combine their distinct reason keys
+        // (sorted for run-to-run determinism) so the emitted event is order-independent and never
+        // silently drops a reason. `reason` stays a nullable String for backward compatibility.
+        val reason = propMarks
+            .map { it.reason.key }
+            .distinct()
+            .sorted()
+            .joinToString(",")
+            .ifEmpty { null }
+        listener.onEvent(
+            PropositionStatusChanged(
+                proposition = saved,
+                previousStatus = previousStatus,
+                newStatus = newStatus,
+                reason = reason,
+            ),
+        )
+    }
+
+    private fun records(
+        propMarks: List<PropositionMark>,
+        runId: String,
+        outcome: CollectorOutcome,
+        previousStatus: PropositionStatus?,
+        newStatus: PropositionStatus?,
+    ): List<CollectorRecord> = propMarks.map { mark ->
+        CollectorRecord(
+            propositionId = mark.propositionId,
+            reason = mark.reason,
+            outcome = outcome,
+            strategyName = mark.strategyName,
+            runId = runId,
+            previousStatus = previousStatus,
+            newStatus = newStatus,
+        )
+    }
+
+    private fun persistRun(
+        runId: String,
+        startedAt: Instant,
+        finishedAt: Instant,
+        dryRun: Boolean,
+        records: List<CollectorRecord>,
+    ) {
+        val store = recordStore ?: return
+        // The finished run header groups the per-proposition trail under a shared runId; the
+        // record store owns the durable trail, so records carry that runId forward. The header
+        // is persisted unconditionally — even a zero-mark run must leave a retrievable trace.
+        val run = CollectorRun(runId = runId, startedAt = startedAt, finishedAt = finishedAt, dryRun = dryRun)
+        store.recordRun(run)
+        records.forEach(store::record)
+        logger.debug(
+            "Collector run {} finished (dryRun={}, records={})",
+            run.runId,
+            run.dryRun,
+            records.size,
+        )
+    }
+
+    private fun newRunId(): String = UUID.randomUUID().toString()
+
+    private companion object {
+        /** Sentinel runId for the pure-read [collect] path: not persisted, not queryable. */
+        const val EPHEMERAL_RUN_ID = ""
+    }
+}
