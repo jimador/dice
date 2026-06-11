@@ -111,6 +111,29 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+            Ephemeral graph-database container for the seeded-graph projection proof.
+            Test scope only; versions are managed transitively by the Embabel BOM
+            (spring-boot-dependencies). No driver/container type leaks into main.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>neo4j</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.neo4j.driver</groupId>
+            <artifactId>neo4j-java-driver</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>
