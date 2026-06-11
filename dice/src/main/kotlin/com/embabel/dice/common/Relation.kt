@@ -22,8 +22,16 @@ package com.embabel.dice.common
  * @param predicate The verb phrase expressing the relationship, e.g., "likes", "works at"
  * @param meaning A description of what the relationship means, e.g., "expresses positive preference for"
  * @param knowledgeType The epistemological nature of this relationship
- * @param subjectType Optional constraint on the subject entity type, e.g., "Person"
- * @param objectType Optional constraint on the object entity type, e.g., "Company"
+ * @param subjectType Optional constraint on the subject entity type, e.g., "Person".
+ *   When set from a Kotlin class via [withSubject] it is the class `simpleName`; a
+ *   mention's type must match this (tolerant of case) for an edge to project.
+ * @param objectType Optional constraint on the object entity type, e.g., "Company".
+ *   When set from a Kotlin class via [withObject] it is the class `simpleName`; a
+ *   mention's type must match this (tolerant of case) for an edge to project.
+ * @param evidenceFloor Optional minimum evidence required before this relation may be asserted at
+ *   full strength. Left null, the relation has no floor and behaves as before. When set, a gate such
+ *   as `EvidenceFloorGate` reads it to demote or hold under-supported assertions — so a structural
+ *   signal can't masquerade as a strong claim.
  */
 data class Relation @JvmOverloads constructor(
     val predicate: String,
@@ -31,6 +39,7 @@ data class Relation @JvmOverloads constructor(
     val knowledgeType: KnowledgeType,
     val subjectType: String? = null,
     val objectType: String? = null,
+    val evidenceFloor: EvidenceFloor? = null,
 ) {
 
     fun withSubject(type: Class<*>): Relation =
@@ -39,49 +48,41 @@ data class Relation @JvmOverloads constructor(
     fun withObject(type: Class<*>): Relation =
         copy(objectType = type.simpleName)
 
+    /** Declare the minimum evidence required before this relation may be asserted at full strength. */
+    fun withEvidenceFloor(floor: EvidenceFloor): Relation =
+        copy(evidenceFloor = floor)
+
     companion object {
 
-        /**
-         * Create a semantic (factual) relation with no type constraints.
-         */
+        /** A factual relation with no subject or object type constraint. */
         @JvmStatic
         @JvmOverloads
         fun semantic(predicate: String, meaning: String = predicate): Relation =
             Relation(predicate, meaning, KnowledgeType.SEMANTIC)
 
-        /**
-         * Create a procedural (preference/behavioral) relation with no type constraints.
-         */
+        /** A preference/behavioral relation with no subject or object type constraint. */
         @JvmStatic
         @JvmOverloads
         fun procedural(predicate: String, meaning: String = predicate): Relation =
             Relation(predicate, meaning, KnowledgeType.PROCEDURAL)
 
-        /**
-         * Create an episodic (event-based) relation with no type constraints.
-         */
+        /** An event-based relation with no subject or object type constraint. */
         @JvmStatic
         @JvmOverloads
         fun episodic(predicate: String, meaning: String = predicate): Relation =
             Relation(predicate, meaning, KnowledgeType.EPISODIC)
 
-        /**
-         * Create a semantic relation with subject type constraint.
-         */
+        /** A factual relation that only applies when the subject matches the given type. */
         @JvmStatic
         fun semanticForSubject(predicate: String, meaning: String, subjectType: String): Relation =
             Relation(predicate, meaning, KnowledgeType.SEMANTIC, subjectType = subjectType)
 
-        /**
-         * Create a procedural relation with subject type constraint.
-         */
+        /** A preference/behavioral relation that only applies when the subject matches the given type. */
         @JvmStatic
         fun proceduralForSubject(predicate: String, meaning: String, subjectType: String): Relation =
             Relation(predicate, meaning, KnowledgeType.PROCEDURAL, subjectType = subjectType)
 
-        /**
-         * Create a semantic relation with both type constraints.
-         */
+        /** A factual relation constrained to a specific subject and object type pair. */
         @JvmStatic
         fun semanticBetween(predicate: String, meaning: String, subjectType: String, objectType: String): Relation =
             Relation(predicate, meaning, KnowledgeType.SEMANTIC, subjectType = subjectType, objectType = objectType)
