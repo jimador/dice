@@ -20,28 +20,27 @@ import com.embabel.dice.proposition.PropositionRepository
 import com.fasterxml.jackson.annotation.JsonPropertyDescription
 
 /**
- * Classification of the relationship between two propositions.
- * Used by the Revise module to determine how to handle new propositions.
+ * How a new proposition relates to an existing one — determines what the reviser does with it.
  */
 enum class PropositionRelation {
-    /** Propositions express the same information - should be merged */
+    /** Both propositions say the same thing — merge them. */
     IDENTICAL,
 
-    /** Propositions are related but not identical - may need revision */
+    /** Related but not identical — reinforce the existing one. */
     SIMILAR,
 
-    /** Propositions are unrelated - new proposition stored separately */
+    /** No meaningful overlap — store the new proposition separately. */
     UNRELATED,
 
-    /** Propositions contradict each other - confidence adjustment needed */
+    /** They contradict each other — reduce the existing proposition's confidence. */
     CONTRADICTORY,
 
-    /** New proposition generalizes or abstracts existing ones - stored as new */
+    /** The new proposition is a higher-level abstraction of existing ones — store it as new. */
     GENERALIZES,
 }
 
 /**
- * A retrieved proposition with its computed relation to a new proposition.
+ * A candidate proposition from the repository, tagged with how it relates to the incoming proposition.
  */
 data class ClassifiedProposition(
     val proposition: Proposition,
@@ -51,33 +50,34 @@ data class ClassifiedProposition(
 )
 
 /**
- * Result of revising a proposition against the existing store.
+ * What the reviser decided to do with a proposition.
  */
 sealed class RevisionResult {
-    /** Merged with an existing identical proposition */
+    /** The incoming proposition said the same thing as an existing one — they were merged. */
     data class Merged(
         val original: Proposition,
         val revised: Proposition,
     ) : RevisionResult()
 
-    /** Reinforced an existing similar proposition */
+    /** The incoming proposition corroborated an existing one — the existing was reinforced. */
     data class Reinforced(
         val original: Proposition,
         val revised: Proposition,
     ) : RevisionResult()
 
-    /** Contradicted an existing proposition (both stored, old with reduced confidence) */
+    /** The incoming proposition contradicts an existing one — both are stored, and the old one's confidence is reduced. */
     data class Contradicted(
         val original: Proposition,
         val new: Proposition,
+        val conflictType: ConflictType = ConflictType.Contradiction,
     ) : RevisionResult()
 
-    /** Stored as a new proposition (no similar ones found) */
+    /** No similar proposition was found — stored as a brand-new entry. */
     data class New(
         val proposition: Proposition,
     ) : RevisionResult()
 
-    /** Stored as a new proposition that generalizes existing ones */
+    /** The incoming proposition is a higher-level abstraction of existing ones — stored as new alongside the propositions it generalizes. */
     data class Generalized(
         val proposition: Proposition,
         val generalizes: List<Proposition>,
@@ -85,28 +85,22 @@ sealed class RevisionResult {
 }
 
 /**
- * Revises propositions by comparing against existing ones in the repository.
+ * Compares an incoming proposition against existing ones in the repository and decides what to do
+ * with it — merge, reinforce, contradict, or store as new.
  *
- * The revision process:
- * 1. Retrieve similar propositions using vector similarity
- * 2. Classify relationships (identical, similar, contradictory, unrelated)
- * 3. Return revision result indicating how to handle the proposition
- *
- * **Important**: The reviser does NOT persist propositions. It only returns
- * the revision result. The caller is responsible for persisting using
- * [PersistablePropositionResults.persist].
+ * The reviser reads from the repository but never writes to it. The pipeline is responsible for
+ * persisting the returned [RevisionResult].
  */
 interface PropositionReviser {
 
     /**
-     * Revise a new proposition against the existing repository.
+     * Revise a single incoming proposition against the store.
      *
-     * Does NOT persist the result - the caller must persist using
-     * [PersistablePropositionResults.persist] after collecting all results.
+     * Reads from the repository but does not persist anything — the caller decides what to save.
      *
-     * @param newProposition The newly extracted proposition
-     * @param repository The proposition repository for retrieval (read-only)
-     * @return The result of revision (merged, reinforced, contradicted, or new)
+     * @param newProposition the freshly extracted proposition to check
+     * @param repository the store to search for similar or conflicting propositions
+     * @return what happened: merged, reinforced, contradicted, or new
      */
     fun revise(
         newProposition: Proposition,
@@ -114,11 +108,11 @@ interface PropositionReviser {
     ): RevisionResult
 
     /**
-     * Revise multiple propositions, returning results for each.
+     * Revise a batch of propositions, returning one result per input.
      *
-     * @param propositions The propositions to revise
-     * @param repository The proposition repository
-     * @return List of revision results
+     * @param propositions the propositions to revise
+     * @param repository the store to search
+     * @return results in the same order as the input list
      */
     fun reviseAll(
         propositions: List<Proposition>,
@@ -126,11 +120,11 @@ interface PropositionReviser {
     ): List<RevisionResult> = propositions.map { revise(it, repository) }
 
     /**
-     * Classify the relationship between propositions.
+     * Classify each candidate's relationship to the incoming proposition.
      *
-     * @param newProposition The new proposition
-     * @param candidates Retrieved similar propositions to compare against
-     * @return Classified propositions with their relations
+     * @param newProposition the proposition being evaluated
+     * @param candidates existing propositions retrieved from the store
+     * @return each candidate tagged with its [PropositionRelation] and similarity score
      */
     fun classify(
         newProposition: Proposition,
@@ -139,7 +133,7 @@ interface PropositionReviser {
 }
 
 /**
- * Response structure for classification.
+ * The LLM's classification response for a single proposition against its candidates.
  */
 data class ClassificationResponse(
     @param:JsonPropertyDescription("Classification results for each candidate proposition")

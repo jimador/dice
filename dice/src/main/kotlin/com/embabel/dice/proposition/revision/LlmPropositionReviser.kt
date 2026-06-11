@@ -20,6 +20,9 @@ import com.embabel.common.ai.model.LlmOptions
 import com.embabel.common.core.types.SimilarityCutoff
 import com.embabel.common.core.types.TextSimilaritySearchRequest
 import com.embabel.common.util.trim
+import com.embabel.dice.common.AuthorityResolver
+import com.embabel.dice.common.DiceMetadataKeys
+import com.embabel.dice.common.TrustScorer
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionRepository
@@ -38,8 +41,10 @@ internal data class PendingClassification(
 )
 
 /**
- * LLM-based implementation of PropositionReviser.
- * Uses structured output to classify and revise propositions.
+ * LLM-backed proposition reviser. Finds similar propositions via vector search, classifies their
+ * relationship to the incoming proposition using structured LLM output, then returns the appropriate
+ * [RevisionResult]. Fast paths (canonical text match, high-embedding auto-merge) avoid LLM calls
+ * when possible.
  *
  * Example usage:
  * ```kotlin
@@ -51,20 +56,25 @@ internal data class PendingClassification(
  *     .withClassifyLlm(cheaperLlmOptions)  // optional: cheaper model for classification
  * ```
  *
- * @param llmOptions LLM configuration
- * @param ai AI service for LLM calls
- * @param topK Number of similar propositions to retrieve for classification
- * @param similarityThreshold Minimum similarity threshold - skip LLM if no candidates above this
- * @param minSimilarityForReinforce Minimum LLM-reported similarity to accept SIMILAR classification (default 0.7)
- * @param decayK Decay constant for time-based confidence reduction
- * @param autoMergeThreshold Embedding similarity at or above which propositions are auto-merged without LLM. Set to 1.1 to disable.
- * @param classifyBatchSize Maximum number of propositions to classify in a single LLM call
- * @param entityOverlapFilter When true, candidates that share no entity mentions with the new proposition are
- *   filtered out before LLM classification. This eliminates UNRELATED candidates cheaply via set intersection
- *   instead of an LLM call. Propositions with no entity mentions bypass this filter.
- * @param classifyLlmOptions Optional separate LLM configuration for classification calls. When null (default),
- *   uses the main [llmOptions]. Classification is a structured categorization task that can often use a
- *   smaller/cheaper model than extraction without loss of quality.
+ * @param llmOptions LLM to use for extraction and (by default) classification
+ * @param ai AI service that executes LLM calls
+ * @param topK how many similar propositions to retrieve as classification candidates
+ * @param similarityThreshold candidates below this embedding similarity are skipped without an LLM call
+ * @param minSimilarityForReinforce minimum LLM-reported similarity to accept a SIMILAR classification (default 0.7)
+ * @param decayK decay constant for time-based confidence reduction
+ * @param autoMergeThreshold embedding similarity at or above which propositions are auto-merged without LLM; set to 1.1 to disable
+ * @param classifyBatchSize maximum propositions to classify in a single LLM call
+ * @param entityOverlapFilter when true, candidates sharing no entity mentions with the incoming proposition
+ *   are dropped before the LLM call — cheap set intersection instead of an LLM round-trip;
+ *   propositions with no mentions bypass this filter
+ * @param classifyLlmOptions separate LLM for classification calls; falls back to [llmOptions] when null;
+ *   classification is a simple label-from-5 task that often works well with a smaller/cheaper model
+ * @param trustScorer optional policy that computes and caches an advisory trust score on retained propositions;
+ *   when null, no score is computed and behaviour is identical to a reviser without trust scoring
+ * @param authorityResolver optional policy that resolves a proposition's source-authority tier before scoring;
+ *   only consulted when [trustScorer] is set
+ * @param conflictDetector optional policy that classifies the nature of a contradiction; when set, the
+ *   [RevisionResult.Contradicted] carries the detector's classification instead of the conservative default
  */
 data class LlmPropositionReviser(
     private val llmOptions: LlmOptions,
@@ -77,6 +87,9 @@ data class LlmPropositionReviser(
     private val classifyBatchSize: Int = 15,
     private val entityOverlapFilter: Boolean = true,
     private val classifyLlmOptions: LlmOptions? = null,
+    private val trustScorer: TrustScorer? = null,
+    private val authorityResolver: AuthorityResolver? = null,
+    private val conflictDetector: ConflictDetector? = null,
 ) : PropositionReviser, SimilarityCutoff {
 
     companion object {
@@ -113,49 +126,47 @@ data class LlmPropositionReviser(
             .trim()
 
     /**
-     * Set the number of similar propositions to retrieve for classification.
+     * How many similar propositions to retrieve as classification candidates.
      */
     fun withTopK(topK: Int): LlmPropositionReviser =
         copy(topK = topK)
 
     /**
-     * Set the minimum similarity threshold.
-     * Candidates below this threshold are skipped (no LLM call).
+     * Candidates below this embedding similarity are skipped without an LLM call.
      */
     fun withSimilarityThreshold(threshold: Double): LlmPropositionReviser =
         copy(similarityThreshold = threshold)
 
     /**
-     * Set the minimum similarity score for SIMILAR classifications to be accepted.
-     * If the LLM classifies as SIMILAR but with a score below this threshold,
-     * the classification is treated as UNRELATED.
+     * Minimum LLM-reported similarity to accept a SIMILAR classification.
+     * Anything below this is treated as UNRELATED.
      */
     fun withMinSimilarityForReinforce(threshold: Double): LlmPropositionReviser =
         copy(minSimilarityForReinforce = threshold)
 
     /**
-     * Set the decay constant for time-based confidence reduction.
+     * Decay constant for time-based confidence reduction.
      */
     fun withDecayK(k: Double): LlmPropositionReviser =
         copy(decayK = k)
 
     /**
-     * Set the auto-merge threshold. Embedding similarity at or above this
-     * value causes automatic merging without an LLM call. Set to 1.1 to disable.
+     * Embedding similarity at or above which propositions are auto-merged without an LLM call.
+     * Set to 1.1 to disable auto-merge entirely.
      */
     fun withAutoMergeThreshold(threshold: Double): LlmPropositionReviser =
         copy(autoMergeThreshold = threshold)
 
     /**
-     * Set the batch size for LLM classification calls.
+     * Maximum number of propositions to classify in a single LLM call.
      */
     fun withClassifyBatchSize(size: Int): LlmPropositionReviser =
         copy(classifyBatchSize = size)
 
     /**
-     * Enable or disable the entity-overlap pre-filter.
-     * When enabled, candidates that share no entity mentions with the new proposition
-     * are filtered out before LLM classification, saving LLM calls.
+     * Whether to drop candidates that share no entity mentions with the incoming proposition
+     * before the LLM call. Saves LLM calls by eliminating clearly unrelated candidates via cheap
+     * set intersection.
      */
     fun withEntityOverlapFilter(enabled: Boolean): LlmPropositionReviser =
         copy(entityOverlapFilter = enabled)
@@ -177,9 +188,50 @@ data class LlmPropositionReviser(
         copy(classifyLlmOptions = llm)
 
     /**
-     * Deduplicate a batch of propositions by canonical text, then use fast-path
-     * (canonical match + auto-merge) where possible and batch the rest into
-     * as few LLM calls as possible.
+     * Policy that computes and caches an advisory trust score on retained propositions
+     * (New, Merged, Reinforced). When unset, no trust score is computed.
+     */
+    fun withTrustScorer(scorer: TrustScorer): LlmPropositionReviser =
+        copy(trustScorer = scorer)
+
+    /**
+     * Policy that resolves a proposition's source-authority tier before trust scoring.
+     * Only consulted when a [trustScorer] is also set.
+     */
+    fun withAuthorityResolver(resolver: AuthorityResolver): LlmPropositionReviser =
+        copy(authorityResolver = resolver)
+
+    /**
+     * Policy that classifies the nature of a contradiction. When set, a contradicted
+     * result carries the detector's [ConflictType] instead of the conservative default.
+     */
+    fun withConflictDetector(detector: ConflictDetector): LlmPropositionReviser =
+        copy(conflictDetector = detector)
+
+    /**
+     * Computes and caches an advisory trust score on a retained proposition.
+     *
+     * Returns [p] unchanged when no [trustScorer] is configured. Otherwise resolves the
+     * authority tier (when an [authorityResolver] is set), scores the proposition, and
+     * stores the result under [DiceMetadataKeys.TRUST_SCORE] via an administrative metadata
+     * copy — which advances `metadataRevised` but never re-anchors the decay clock
+     * (`contentRevised`).
+     *
+     * @param p the proposition to score
+     * @param conflictType the conflict this proposition was involved in, or null
+     * @return [p] unchanged, or a copy with the trust score cached in its metadata
+     */
+    private fun scoreAndCache(p: Proposition, conflictType: ConflictType? = null): Proposition {
+        val scorer = trustScorer ?: return p
+        val tier = authorityResolver?.resolve(p)
+        val score = scorer.score(p, tier, conflictType)
+        return p.withMetadataValue(DiceMetadataKeys.TRUST_SCORE, score)
+    }
+
+    /**
+     * Revise a whole batch efficiently: deduplicate by canonical text first, run fast paths
+     * (canonical match + auto-merge) where possible, then send the remainder to the LLM in
+     * as few calls as possible.
      */
     override fun reviseAll(
         propositions: List<Proposition>,
@@ -222,8 +274,9 @@ data class LlmPropositionReviser(
     }
 
     /**
-     * Retrieve candidates and attempt fast-path resolution.
-     * Returns a [RevisionResult] if resolved, or a [PendingClassification] if LLM is needed.
+     * Searches for similar candidates and tries to resolve via fast paths (canonical text match,
+     * auto-merge). Returns a [RevisionResult] when resolved without the LLM, or a
+     * [PendingClassification] when the LLM is still needed.
      */
     internal fun retrieveAndFastPath(
         newProposition: Proposition,
@@ -244,7 +297,7 @@ data class LlmPropositionReviser(
             val original = repository.findById(canonicalMatch.id) ?: canonicalMatch
             val merged = mergePropositions(original, newProposition)
             logger.debug("Canonical text match: {}", newProposition.text.take(60))
-            return RevisionResult.Merged(original, merged)
+            return RevisionResult.Merged(original, scoreAndCache(merged))
         }
 
         // Fast path 2: vector similarity search
@@ -262,7 +315,7 @@ data class LlmPropositionReviser(
 
         if (similarWithScores.isEmpty()) {
             logger.debug("New proposition (no canonical or embedding match): {}", newProposition.text)
-            return RevisionResult.New(newProposition)
+            return RevisionResult.New(scoreAndCache(newProposition))
         }
 
         logger.debug(
@@ -279,7 +332,7 @@ data class LlmPropositionReviser(
                 "Auto-merge (embedding score {} >= {}): {}",
                 topCandidate.score, autoMergeThreshold, newProposition.text.take(60)
             )
-            return RevisionResult.Merged(original, merged)
+            return RevisionResult.Merged(original, scoreAndCache(merged))
         }
 
         // Apply decay for ranking
@@ -299,7 +352,7 @@ data class LlmPropositionReviser(
             }
             if (filtered.isEmpty()) {
                 logger.debug("All candidates eliminated by entity-overlap filter, treating as new: {}", newProposition.text.take(60))
-                return RevisionResult.New(newProposition)
+                return RevisionResult.New(scoreAndCache(newProposition))
             }
             filtered
         } else {
@@ -310,8 +363,8 @@ data class LlmPropositionReviser(
     }
 
     /**
-     * Classify a batch of pending propositions using as few LLM calls as possible.
-     * Groups items into chunks of [classifyBatchSize] and makes one LLM call per chunk.
+     * Classifies a batch of pending propositions, grouping them into chunks of [classifyBatchSize]
+     * so only one LLM call is made per chunk.
      */
     internal fun classifyBatch(
         items: List<PendingClassification>,
@@ -371,7 +424,7 @@ data class LlmPropositionReviser(
                         "No classification returned for batch index {}, treating as new: {}",
                         chunkIndex, item.newProposition.text.take(60)
                     )
-                    allResults.add(RevisionResult.New(item.newProposition))
+                    allResults.add(RevisionResult.New(scoreAndCache(item.newProposition)))
                     continue
                 }
 
@@ -400,8 +453,8 @@ data class LlmPropositionReviser(
     }
 
     /**
-     * Single-proposition revise — uses [retrieveAndFastPath] then falls back to
-     * single-proposition LLM classify for backward compatibility.
+     * Revises a single proposition: tries fast paths first, then falls back to a
+     * single-proposition LLM classify call if needed.
      */
     override fun revise(
         newProposition: Proposition,
@@ -413,14 +466,15 @@ data class LlmPropositionReviser(
                 val classified = classify(outcome.newProposition, outcome.candidates)
                 classifiedToResult(outcome.newProposition, classified, repository)
             }
-            else -> RevisionResult.New(newProposition)
+            else -> RevisionResult.New(scoreAndCache(newProposition))
         }
     }
 
     /**
-     * Convert classified propositions into a RevisionResult.
+     * Turns the LLM's classified candidates into the appropriate [RevisionResult] — merge,
+     * reinforce, contradict, generalize, or new.
      */
-    private fun classifiedToResult(
+    internal fun classifiedToResult(
         newProposition: Proposition,
         classified: List<ClassifiedProposition>,
         repository: PropositionRepository,
@@ -451,7 +505,7 @@ data class LlmPropositionReviser(
                     ?: identical.proposition
                 val merged = mergePropositions(original, newProposition)
                 logger.debug("Merged: {} + {} -> {}", original.text, newProposition.text, merged.text)
-                RevisionResult.Merged(original, merged)
+                RevisionResult.Merged(original, scoreAndCache(merged))
             }
 
             contradictory != null -> {
@@ -468,7 +522,18 @@ data class LlmPropositionReviser(
                     "Contradicted: {} (conf: {}, decay: {}) vs new: {}",
                     original.text, reducedConfidence, acceleratedDecay, newProposition.text
                 )
-                RevisionResult.Contradicted(contradicted, newProposition)
+                // Contradicted is deliberately NOT trust-scored: it keeps its existing
+                // confidence-reduction trajectory. A wired detector refines only its classification.
+                val detector = conflictDetector
+                if (detector != null) {
+                    RevisionResult.Contradicted(
+                        contradicted,
+                        newProposition,
+                        conflictType = detector.detect(newProposition, original),
+                    )
+                } else {
+                    RevisionResult.Contradicted(contradicted, newProposition)
+                }
             }
 
             generalizes.isNotEmpty() -> {
@@ -485,12 +550,12 @@ data class LlmPropositionReviser(
                     ?: mostSimilar.proposition
                 val revised = reinforceProposition(original, newProposition)
                 logger.debug("Reinforced: {} -> {}", original.text, revised.text)
-                RevisionResult.Reinforced(original, revised)
+                RevisionResult.Reinforced(original, scoreAndCache(revised))
             }
 
             else -> {
                 logger.debug("New proposition (unrelated): {}", newProposition.text)
-                RevisionResult.New(newProposition)
+                RevisionResult.New(scoreAndCache(newProposition))
             }
         }
     }
