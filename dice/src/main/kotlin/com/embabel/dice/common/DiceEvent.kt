@@ -241,6 +241,22 @@ data class PropositionProjectionSkipped @JvmOverloads constructor(
 ) : DiceEvent
 
 /**
+ * A proposition's relation was demoted to a weaker one because it didn't have enough
+ * supporting evidence — kept and downgraded rather than thrown away.
+ *
+ * @property proposition The proposition whose relation was demoted.
+ * @property toRelation The weaker relation it was demoted to.
+ * @property reason Why it was demoted.
+ * @property timestamp When the event was created.
+ */
+data class PropositionDemoted @JvmOverloads constructor(
+    val proposition: Proposition,
+    val toRelation: String,
+    val reason: String,
+    override val timestamp: Instant = Instant.now(),
+) : DiceEvent
+
+/**
  * Implement this to react to [DiceEvent]s as they happen. Keep in mind handlers run inline
  * on the emitting thread, so do anything slow off to the side.
  */
