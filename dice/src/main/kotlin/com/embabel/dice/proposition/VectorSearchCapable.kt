@@ -29,6 +29,15 @@ import com.embabel.common.core.types.ZeroToOne
 interface VectorSearchCapable {
 
     /**
+     * Whether this particular instance can actually run vector search. Implementing the interface is a
+     * type-level promise; this is the runtime truth. A store that can be wired without an embedder
+     * (so it satisfies the type but has nothing to embed with) should override this to report whether
+     * it was given one. Lets a caller — e.g. [PropositionStoreTemplate.supportsVector] — distinguish
+     * "configured for vectors" from "vector search will quietly return empty".
+     */
+    val supportsVector: Boolean get() = true
+
+    /**
      * Query propositions by specification. Required by [findSimilarWithScores] (filtered overload)
      * and [findClusters]; satisfied automatically when a type also implements [PropositionStore].
      */

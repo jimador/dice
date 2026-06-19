@@ -25,6 +25,11 @@ object DiceMetadataKeys {
 
     /**
      * Cached trust score for a proposition — a `Double` in `[0.0, 1.0]` produced by a [TrustScorer].
+     *
+     * It's a cache: a content revision (`withText` / `withConfidence`) re-anchors the decay clock but
+     * does not clear this key, so the score can briefly outlive the content it was computed for. That's
+     * self-healing — the reviser re-scores on the next merge/reinforce — and trust is advisory, so a
+     * momentarily stale value is harmless rather than wrong.
      */
     const val TRUST_SCORE = "dice.trust.score"
 

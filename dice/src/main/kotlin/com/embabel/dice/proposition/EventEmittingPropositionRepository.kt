@@ -39,8 +39,11 @@ import com.embabel.dice.common.PropositionStatusChanged
  *   decorator's [save] and emit nothing.
  *
  * To keep fresh ACTIVE inserts read-free, the prior-status lookup is skipped when the incoming
- * status is already ACTIVE. This means a revival back to ACTIVE is treated as a plain persist
- * rather than a status-change event — an acceptable tradeoff for the common hot path.
+ * status is already ACTIVE. The tradeoff isn't only performance: it loses a real signal. A revival
+ * STALE → ACTIVE (reinforcement — arguably the most interesting lifecycle transition for a downstream
+ * index) is reported as a plain [PropositionPersisted], not a [PropositionStatusChanged]. A consumer
+ * that needs the reinforcement signal should observe it at its origin — the reviser, which knows it is
+ * reinforcing — rather than infer it here on the hot path.
  *
  * Throw isolation is the listener's responsibility — wrap the listener in `SafeDiceEventListener`
  * if you need graceful degradation.

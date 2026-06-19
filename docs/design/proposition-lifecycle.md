@@ -47,7 +47,10 @@ exists so that real deployments opt *in* to a judgment model; nothing changes un
 When DICE does reason about trust, the dominant signal is **where a fact came from**, not how
 confident the language model sounded. Sources fall into tiers: first-party records outrank named
 external sources, which outrank derived or inferred material, which outranks "we don't know."
-When a proposition has mixed grounding, the strongest source it can point to wins.
+When a proposition has mixed grounding, the strongest source it can point to wins. This is a
+deliberately optimistic default — one primary record among ten weak ones makes the whole proposition
+primary — chosen because a single authoritative source genuinely does vouch for the fact; a
+deployment that wants the opposite (weakest-link, or a blend) should expect to override the resolver.
 
 Two things drove this. First, provenance is a more honest trust signal than self-reported
 confidence — a primary record is trustworthy for reasons that have nothing to do with how a

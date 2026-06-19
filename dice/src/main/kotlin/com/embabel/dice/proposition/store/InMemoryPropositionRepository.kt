@@ -51,6 +51,9 @@ class InMemoryPropositionRepository(
     override val luceneSyntaxNotes: String
         get() = "no lucene support"
 
+    /** Vector search only works when an embedder was supplied; otherwise the type claims it but can't. */
+    override val supportsVector: Boolean get() = embeddingService != null
+
     override fun save(proposition: Proposition): Proposition {
         propositions[proposition.id] = proposition
         embeddingService?.let { embeddings[proposition.id] = it.embed(proposition.text) }

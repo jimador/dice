@@ -84,6 +84,9 @@ class DrivinePropositionStoreIntegrationTest {
         confidence: Double = 0.9,
         decay: Double = 0.0,
         contentRevised: Instant = Instant.now(),
+        // Defaults to contentRevised so "revised" queries (which key on lastTouched = the later of the
+        // two clocks) see the intended time instead of an always-now metadata clock.
+        metadataRevised: Instant = contentRevised,
         status: PropositionStatus = PropositionStatus.ACTIVE,
         entityId: String? = null,
         pinned: Boolean = false,
@@ -101,6 +104,7 @@ class DrivinePropositionStoreIntegrationTest {
         confidence = confidence,
         decay = decay,
         contentRevised = contentRevised,
+        metadataRevised = metadataRevised,
         status = status,
         pinned = pinned,
         level = level,

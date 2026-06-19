@@ -102,6 +102,18 @@ class PropositionStoreTemplateTest {
     }
 
     @Test
+    fun `supportsVector is behavioural - an embedder-less repository reports false through the template`() {
+        // The repo implements VectorSearchCapable (it's a PropositionRepository), so a structural
+        // `is` check would answer true. But with no embedder it can only return empty, so the
+        // template must report false — distinguishing "configured for vectors" from "returns empty".
+        val template = PropositionStoreTemplate(InMemoryPropositionRepository(embeddingService = null))
+        val request = TextSimilaritySearchRequest(query = "anything", similarityThreshold = 0.5, topK = 10)
+
+        assertFalse(template.supportsVector, "an embedder-less repo does not actually support vector search")
+        assertTrue(template.findSimilar(request).isEmpty(), "and vector search returns empty")
+    }
+
+    @Test
     fun `returns empty and does not throw when the store lacks graph traversal`() {
         val template = PropositionStoreTemplate(BaseOnlyStore())
 

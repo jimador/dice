@@ -22,6 +22,7 @@ import com.embabel.common.ai.model.EmbeddingService
 import com.embabel.common.core.types.SimilarityResult
 import com.embabel.common.core.types.TextSimilaritySearchRequest
 import com.embabel.common.core.types.ZeroToOne
+import com.embabel.dice.common.DiceMetadataKeys
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionQuery.OrderBy
@@ -315,13 +316,22 @@ open class DrivinePropositionRepository(
         query.maxLevel?.let { proposition.level lte it }
         query.createdAfter?.let { proposition.created gte it }
         query.createdBefore?.let { proposition.created lte it }
-        query.revisedAfter?.let { proposition.contentRevised gte it }
-        query.revisedBefore?.let { proposition.contentRevised lte it }
+        query.revisedAfter?.let { proposition.lastTouched gte it }
+        query.revisedBefore?.let { proposition.lastTouched lte it }
         query.accessedAfter?.let { proposition.lastAccessed gte it }
         query.accessedBefore?.let { proposition.lastAccessed lte it }
         query.minImportance?.let { proposition.importance gte it }
         query.minReinforceCount?.let { proposition.reinforceCount gte it }
         if (includeEffectiveConfidence) query.minEffectiveConfidence?.let { proposition.effectiveConfidence gte it }
+        query.minTrustScore?.let { threshold ->
+            // Fail-open, matching the in-memory backend's passesMinTrust: an unscored proposition (no
+            // cached trust property) passes the gate, so the predicate is "missing OR >= threshold".
+            // Trust rides the @PropertyBag, stored flat as `metadata.<key>`, so it pushes into the DB.
+            anyOf {
+                proposition.metadata.key(DiceMetadataKeys.TRUST_SCORE).isNull()
+                proposition.metadata.key(DiceMetadataKeys.TRUST_SCORE) gte threshold
+            }
+        }
         query.entityId?.let { id -> mentions.any { resolvedId eq id } }
         query.anyEntityIds?.let { ids -> mentions.any { resolvedId inList ids } }
         query.allEntityIds?.forEach { id -> mentions.any { resolvedId eq id } }
@@ -332,7 +342,7 @@ open class DrivinePropositionRepository(
         when (orderBy) {
             OrderBy.EFFECTIVE_CONFIDENCE_DESC -> orderByEffectiveConfidenceDescNullsLast()
             OrderBy.CREATED_DESC -> proposition.created.desc()
-            OrderBy.REVISED_DESC -> proposition.contentRevised.desc()
+            OrderBy.REVISED_DESC -> proposition.lastTouched.desc()
             OrderBy.LAST_ACCESSED_DESC -> proposition.lastAccessed.desc()
             OrderBy.REINFORCE_COUNT_DESC -> proposition.reinforceCount.desc()
             OrderBy.IMPORTANCE_DESC -> proposition.importance.desc()

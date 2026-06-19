@@ -60,6 +60,17 @@ data class PropositionNode(
     // Proposition splits revision into content vs metadata revisions (lifecycle work, PR #30).
     val contentRevised: Instant,
     val metadataRevised: Instant,
+
+    /**
+     * The later of [contentRevised] and [metadataRevised] — "last touched of any kind". Materialised
+     * (not derived at query time) so "revised" filtering and ordering push into the database against a
+     * single indexable column, matching the in-memory backend's `Proposition.lastTouched` semantics.
+     * Written on every save; the partial-update writers (decay sweep, re-embed) don't touch the
+     * revision clocks, so it never drifts.
+     */
+    @RangeIndex
+    val lastTouched: Instant,
+
     val lastAccessed: Instant,
 
     /** [com.embabel.dice.proposition.PropositionStatus] name. */

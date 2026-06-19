@@ -88,11 +88,16 @@ class JsonFilePropositionRepository @JvmOverloads constructor(
     override val luceneSyntaxNotes: String
         get() = "no lucene support"
 
+    /** Vector search only works when an embedder was supplied; otherwise the type claims it but can't. */
+    override val supportsVector: Boolean get() = embeddingService != null
+
     override fun save(proposition: Proposition): Proposition = synchronized(writeLock) {
+        // Embed first, before touching the maps: a failing embedder (remote service down, rate limit)
+        // must not leave the in-memory state ahead of disk. Computing the vector up front keeps the
+        // whole save all-or-nothing.
+        val newEmbedding = embeddingService?.embed(proposition.text)
         val previous = propositions.put(proposition.id, proposition)
-        val previousEmbedding = embeddingService?.let { embedder ->
-            embeddings.put(proposition.id, embedder.embed(proposition.text))
-        }
+        val previousEmbedding = newEmbedding?.let { embeddings.put(proposition.id, it) }
         try {
             flush()
         } catch (e: Exception) {

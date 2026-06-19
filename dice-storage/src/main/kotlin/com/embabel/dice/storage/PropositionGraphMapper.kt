@@ -87,6 +87,7 @@ object PropositionGraphMapper {
             created = p.created,
             contentRevised = p.contentRevised,
             metadataRevised = p.metadataRevised,
+            lastTouched = p.lastTouched,
             lastAccessed = p.lastAccessed,
             status = p.status.name,
             pinned = p.pinned,

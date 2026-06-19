@@ -115,6 +115,10 @@ class TemporalConflictDetector @JvmOverloads constructor(
         /**
          * Default set of predicate names treated as time-evolving facts. Kept small
          * and configurable; consumers can supply their own set.
+         *
+         * Note: `"status"` here is a free-text *predicate* string (a fact like "status: married"),
+         * unrelated to the [com.embabel.dice.proposition.PropositionStatus] enum — the name overlap is
+         * coincidental.
          */
         @JvmField
         val DEFAULT_EVOLVING_PREDICATES: Set<String> =

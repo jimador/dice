@@ -62,8 +62,13 @@ class PropositionStoreTemplate(private val store: PropositionStore) {
     fun findAbstractionsOf(propositionId: String): List<Proposition> =
         (store as? GraphTraversalCapable)?.findAbstractionsOf(propositionId) ?: emptyList()
 
-    /** Whether the wrapped store honestly backs vector similarity search. */
-    val supportsVector: Boolean get() = store is VectorSearchCapable
+    /**
+     * Whether the wrapped store can actually run vector similarity search right now. This is
+     * behavioural, not just structural: a store that implements [VectorSearchCapable] but was wired
+     * without an embedder reports `false` here (and returns empty from [findSimilar]), so a caller
+     * never sees `true` paired with silently-empty results.
+     */
+    val supportsVector: Boolean get() = (store as? VectorSearchCapable)?.supportsVector ?: false
 
     /** Whether the wrapped store honestly backs abstraction-hierarchy traversal. */
     val supportsGraph: Boolean get() = store is GraphTraversalCapable
