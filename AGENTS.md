@@ -9,6 +9,9 @@ DICE (Domain-Integrated Context Engineering) is a proposition-first knowledge su
 | `dice` | The entire domain: `Proposition` model, `PropositionStore`/`PropositionRepository` SPIs, extraction pipeline, revision/conflict detection, entity resolution, projectors (graph, Prolog, memory), incremental analysis, in-memory and file-backed stores, tuProlog integration, REST endpoints |
 | `dice-storage` | Drivine/Neo4j implementation of `PropositionRepository`, `ChunkHistoryStore`, and `DecayManager`; uses Kotlin 2.2 for the Drivine KSP-generated query DSL |
 | `dice-storage-autoconfigure` | Spring Boot auto-configuration that wires the right backend based on `embabel.dice.store.type` and schedules the decay tick |
+| `dice-report` | Output projectors over propositions: rationale (why a fact is believed, with evidence), structured report, and surprising-link discovery |
+| `dice-ingestion` | Ingestion SPI (artifacts → chunks) with a content-hash dedup ledger so the same source isn't extracted twice |
+| `dice-integration-tests` | Test-only: the cross-feature end-to-end canonical-flow harness |
 
 ## Build & test
 
