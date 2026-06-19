@@ -80,4 +80,37 @@ class LlmRationaleProjectorTest {
         assertEquals("They form a coherent picture", artifact.text)
         assertTrue(artifact.sourcePropositionIds.containsAll(listOf("p1", "p2")))
     }
+
+    @Test
+    fun `confidence above 1 is clamped to 1`() {
+        val response = RationaleResponse("some text", confidence = 1.5)
+        val projector = LlmRationaleProjector.withLlm(LlmOptions()).withAi(mockAi(response))
+
+        val artifact = projector.rationale(proposition("p1", "a fact"))
+
+        assertEquals(1.0, artifact.confidence, "confidence must be clamped to 1.0 when the model returns > 1")
+    }
+
+    @Test
+    fun `confidence below 0 is clamped to 0`() {
+        val response = RationaleResponse("some text", confidence = -0.3)
+        val projector = LlmRationaleProjector.withLlm(LlmOptions()).withAi(mockAi(response))
+
+        val artifact = projector.rationale(proposition("p1", "a fact"))
+
+        assertEquals(0.0, artifact.confidence, "confidence must be clamped to 0.0 when the model returns < 0")
+    }
+
+    @Test
+    fun `group with blank label produces a valid artifact without throwing`() {
+        val response = RationaleResponse("valid rationale", confidence = 0.6)
+        val projector = LlmRationaleProjector.withLlm(LlmOptions()).withAi(mockAi(response))
+
+        val prop = proposition("p1", "a lone fact")
+        val group = PropositionGroup.of("", prop)
+        val artifact = projector.rationale(group)
+
+        assertTrue(artifact.sourcePropositionIds.contains("p1"), "artifact must reference the source proposition")
+        assertEquals("valid rationale", artifact.text)
+    }
 }

@@ -31,6 +31,20 @@ data class StructuredReportProjector @JvmOverloads constructor(
     private val topN: Int = 5,
 ) : ReportProjector {
 
+    /**
+     * Aggregate [propositions] into a [Report].
+     *
+     * If the list is empty, returns [Report.EMPTY] with the given title immediately —
+     * all maps and lists in the result will be empty. Otherwise:
+     * - Groups by [Proposition.status] and [Proposition.level], preserving encounter
+     *   order within each group.
+     * - Selects the top [topN] (default 5) propositions by effective confidence descending,
+     *   ties broken by id for a stable, reproducible order.
+     *
+     * @param propositions The propositions to aggregate (may be empty)
+     * @param title Title for the resulting report
+     * @return A deterministic [Report] projection
+     */
     override fun report(propositions: List<Proposition>, title: String): Report {
         if (propositions.isEmpty()) {
             return Report.EMPTY.copy(title = title)

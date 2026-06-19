@@ -52,11 +52,14 @@ data class LlmRationaleProjector(
 
     companion object {
 
+        /** Start building a projector by choosing the LLM options to use. */
         @JvmStatic
         fun withLlm(llm: LlmOptions): Builder = Builder(llm)
 
+        /** Fluent builder — chain [withAi] after [withLlm] to get a ready projector. */
         class Builder(private val llmOptions: LlmOptions) {
 
+            /** Finish the builder by supplying the [Ai] execution handle. */
             fun withAi(ai: Ai): LlmRationaleProjector =
                 LlmRationaleProjector(
                     llmOptions = llmOptions,
@@ -110,7 +113,10 @@ data class LlmRationaleProjector(
 }
 
 /**
- * Structured response for rationale generation.
+ * What the LLM sends back: the generated rationale prose and its self-reported confidence.
+ *
+ * The confidence field defaults to 0.7 when the model omits it and is clamped to [0.0, 1.0]
+ * before being written into the [RationaleArtifact].
  */
 data class RationaleResponse(
     @param:JsonPropertyDescription("Clear, human-readable prose explaining why the propositions are believed and how they connect")
