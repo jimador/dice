@@ -15,102 +15,79 @@
  */
 package com.embabel.dice.incremental
 
-import java.time.Instant
+import com.embabel.agent.core.ContextId
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Tracks the history of processed chunks for incremental analysis.
  * Enables deduplication and resumption of processing.
  *
  * Implementations should persist this data to allow resumption across sessions.
+ * Bookmarks and content-hash deduplication are scoped by [ContextId] so that
+ * isolated sessions (multi-tenant runs, simulations, tests) do not leak state.
  */
 interface ChunkHistoryStore {
 
     /**
-     * Get the last analysis bookmark for a source.
-     * Returns null if the source has never been processed.
+     * Get the last [AnalysisBookmark] for a source within a context.
      *
-     * @param sourceId The source identifier
-     * @return The last bookmark, or null if never processed
+     * Bookmarks drive incremental resumption in [AbstractIncrementalAnalyzer]:
+     * the analyzer reads [AnalysisBookmark.endIndex] to decide where the next
+     * window starts and whether enough new items exist to trigger processing.
+     * Returns null if the source has never been processed in that context.
      */
-    fun getLastBookmark(sourceId: String): AnalysisBookmark?
+    fun getLastBookmark(key: BookmarkKey): AnalysisBookmark?
 
     /**
-     * Check if content with the given hash has already been processed.
-     * Used for deduplication.
-     *
-     * @param contentHash SHA-256 hash of the content
-     * @return true if already processed
+     * Check if content with the given hash has already been processed in a context.
      */
-    fun isProcessed(contentHash: String): Boolean
+    fun isProcessed(key: HashKey): Boolean
 
     /**
      * Record that a chunk has been processed.
-     *
-     * @param record The processing record to store
      */
     fun recordProcessed(record: ProcessedChunkRecord)
+
+    /**
+     * Remove all history for the given context. Default no-op for backward compatibility.
+     */
+    fun clearByContext(contextId: ContextId) {}
+
+    /**
+     * Remove all history across every context. Default no-op for backward compatibility.
+     */
+    fun clearAll() {}
 }
 
 /**
- * Bookmark tracking the last analysis position for a source.
- */
-data class AnalysisBookmark(
-    val sourceId: String,
-    val endIndex: Int,
-    val processedAt: Instant,
-)
-
-/**
- * Record of a processed chunk.
- */
-data class ProcessedChunkRecord(
-    val contentHash: String,
-    val sourceId: String,
-    val startIndex: Int,
-    val endIndex: Int,
-    val processedAt: Instant,
-)
-
-/**
- * Configuration for windowed processing.
- */
-data class WindowConfig(
-    /**
-     * Maximum number of items to process in one window.
-     */
-    val windowSize: Int = 20,
-
-    /**
-     * Number of items to overlap between windows for context.
-     */
-    val overlapSize: Int = 2,
-
-    /**
-     * Minimum number of new items required before triggering analysis.
-     */
-    val triggerInterval: Int = 4,
-)
-
-/**
- * Simple in-memory implementation for testing.
+ * Thread-safe in-memory implementation for testing.
+ * Not intended for production use.
  */
 class InMemoryChunkHistoryStore : ChunkHistoryStore {
 
-    private val bookmarks = mutableMapOf<String, AnalysisBookmark>()
-    private val processedHashes = mutableSetOf<String>()
+    private val bookmarks = ConcurrentHashMap<BookmarkKey, AnalysisBookmark>()
+    private val processedHashes = ConcurrentHashMap.newKeySet<HashKey>()
 
-    override fun getLastBookmark(sourceId: String): AnalysisBookmark? =
-        bookmarks[sourceId]
+    override fun getLastBookmark(key: BookmarkKey): AnalysisBookmark? = bookmarks[key]
 
-    override fun isProcessed(contentHash: String): Boolean =
-        contentHash in processedHashes
+    override fun isProcessed(key: HashKey): Boolean = key in processedHashes
 
     override fun recordProcessed(record: ProcessedChunkRecord) {
-        processedHashes.add(record.contentHash)
-        bookmarks[record.sourceId] = AnalysisBookmark(
+        processedHashes.add(record.hashKey)
+        bookmarks[record.bookmarkKey] = AnalysisBookmark(
             sourceId = record.sourceId,
             endIndex = record.endIndex,
             processedAt = record.processedAt,
         )
+    }
+
+    override fun clearByContext(contextId: ContextId) {
+        bookmarks.keys.removeIf { it.contextId == contextId }
+        processedHashes.removeIf { it.contextId == contextId }
+    }
+
+    override fun clearAll() {
+        bookmarks.clear()
+        processedHashes.clear()
     }
 }
