@@ -15,6 +15,8 @@
  */
 package com.embabel.dice.common
 
+import com.embabel.dice.spi.AuthorityTier
+
 /**
  * The minimum evidence a proposition must carry before a relation may be asserted at full strength.
  *

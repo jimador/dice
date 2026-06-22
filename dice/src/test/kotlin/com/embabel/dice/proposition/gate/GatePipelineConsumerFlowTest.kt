@@ -16,9 +16,9 @@
 package com.embabel.dice.proposition.gate
 
 import com.embabel.agent.core.ContextId
-import com.embabel.dice.common.AuthorityTier
+import com.embabel.dice.spi.AuthorityTier
 import com.embabel.dice.common.EvidenceFloor
-import com.embabel.dice.common.FixedAuthorityResolver
+import com.embabel.dice.spi.FixedAuthorityResolver
 import com.embabel.dice.common.PropositionDemoted
 import com.embabel.dice.common.PropositionProjectionSkipped
 import com.embabel.dice.common.PropositionRejected

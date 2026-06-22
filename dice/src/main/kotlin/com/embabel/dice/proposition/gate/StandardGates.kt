@@ -15,9 +15,9 @@
  */
 package com.embabel.dice.proposition.gate
 
-import com.embabel.dice.common.AuthorityResolver
+import com.embabel.dice.spi.AuthorityResolver
 import com.embabel.dice.common.Relations
-import com.embabel.dice.common.StructuralAuthorityResolver
+import com.embabel.dice.spi.StructuralAuthorityResolver
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionStatus
 import com.embabel.dice.proposition.revision.RevisionResult
