@@ -71,6 +71,8 @@ These map onto the lifecycle in [proposition-lifecycle](../docs/design/propositi
 | `text2graph` | `KnowledgeGraphBuilder`, `SourceAnalyzer`, `LlmSourceAnalyzer`, `MultiPassKnowledgeGraphBuilder`, merge policies, relationship resolution |
 | `provenance` | `ProvenanceEntry`, `SourceLocator`, `UriLocator` |
 | `query.oracle` | `Oracle`, `LlmOracle`, `PrologTools`, `ToolOracle` |
+| `query.graph` | `GraphQuery`, `GraphNeighborhood`, `GraphPath`, `PropositionLineage` — neighbourhood/path/lineage retrieval over the graph |
+| `query.discovery` | `RetrievalRouter`, `DiscoveryQuery`, `RetrievalMode`, discovery DTOs — mode-routed retrieval entry point |
 | `temporal` | `TemporalMetadata` — bitemporal valid/observed windows, explicit retraction |
 | `agent` | `Memory`, `MemoryRetriever` (agent-facing view), `ProvenanceResolver` |
 | `web.rest` | `PropositionPipelineController`, `MemoryController`, API key security — optional, activated by `spring-webmvc` |
