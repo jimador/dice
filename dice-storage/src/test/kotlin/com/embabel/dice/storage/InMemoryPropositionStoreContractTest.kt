@@ -13,19 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.embabel.dice.proposition
+package com.embabel.dice.storage
+
+import com.embabel.dice.proposition.PropositionStore
+import com.embabel.dice.proposition.store.InMemoryPropositionRepository
 
 /**
- * Which backend provides a [PropositionRepository], for selecting/flipping implementations.
- *
- * Mirrors the chat-store `ConversationStoreType` convention. [STORED] is any durable backend — the
- * Drivine graph store and the JSON file store both report it; if the graph-vs-file (or SQL) distinction
- * ever needs to drive a decision, a finer storage-type axis can sit beneath [STORED].
+ * Runs the [AbstractPropositionStoreContractTest] suite against the in-memory backend. No Docker, so
+ * it runs in the normal test phase — the always-on half of the cross-backend parity check the graph
+ * IT completes.
  */
-enum class PropositionStoreType {
-    /** Ephemeral, in-process. */
-    IN_MEMORY,
-
-    /** Durable across restarts (a graph store or a file today). */
-    STORED,
+class InMemoryPropositionStoreContractTest : AbstractPropositionStoreContractTest() {
+    override fun store(): PropositionStore = InMemoryPropositionRepository()
 }

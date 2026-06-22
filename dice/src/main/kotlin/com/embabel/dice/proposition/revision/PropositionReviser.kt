@@ -17,6 +17,7 @@ package com.embabel.dice.proposition.revision
 
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.spi.ConflictType
 import com.fasterxml.jackson.annotation.JsonPropertyDescription
 
 /**
@@ -70,6 +71,7 @@ sealed class RevisionResult {
     data class Contradicted(
         val original: Proposition,
         val new: Proposition,
+        val conflictType: ConflictType = ConflictType.Contradiction,
     ) : RevisionResult()
 
     /** Stored as a new proposition (no similar ones found) */

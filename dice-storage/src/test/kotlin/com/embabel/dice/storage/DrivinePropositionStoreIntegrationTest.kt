@@ -87,6 +87,9 @@ class DrivinePropositionStoreIntegrationTest {
         confidence: Double = 0.9,
         decay: Double = 0.0,
         contentRevised: Instant = Instant.now(),
+        // Defaults to contentRevised so "revised" queries (which key on lastTouched = the later of the
+        // two clocks) see the intended time instead of an always-now metadata clock.
+        metadataRevised: Instant = contentRevised,
         status: PropositionStatus = PropositionStatus.ACTIVE,
         entityId: String? = null,
         pinned: Boolean = false,
@@ -104,6 +107,7 @@ class DrivinePropositionStoreIntegrationTest {
         confidence = confidence,
         decay = decay,
         contentRevised = contentRevised,
+        metadataRevised = metadataRevised,
         status = status,
         pinned = pinned,
         level = level,
@@ -172,7 +176,7 @@ class DrivinePropositionStoreIntegrationTest {
         repository.save(prop("c", entityId = "e1", status = PropositionStatus.SUPERSEDED))
 
         val activeMentioningE1 = repository.query(
-            PropositionQuery(entityId = "e1", status = PropositionStatus.ACTIVE),
+            PropositionQuery(entityId = "e1", statuses = setOf(PropositionStatus.ACTIVE)),
         )
         assertEquals(listOf("a"), activeMentioningE1.map { it.text })
     }

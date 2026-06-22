@@ -22,6 +22,7 @@ import com.embabel.common.ai.model.EmbeddingService
 import com.embabel.common.core.types.SimilarityResult
 import com.embabel.common.core.types.TextSimilaritySearchRequest
 import com.embabel.common.core.types.ZeroToOne
+import com.embabel.dice.common.DiceMetadataKeys
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionQuery.OrderBy
@@ -240,13 +241,17 @@ open class DrivinePropositionRepository(
             .map(PropositionGraphMapper::toProposition)
 
     @Transactional(readOnly = true)
-    override fun query(query: PropositionQuery): List<Proposition> =
-        if (needsLiveDecay(query)) queryWithLiveDecay(query)
+    override fun query(query: PropositionQuery): List<Proposition> {
+        val liveDecay = needsLiveDecay(query)
+        val results = if (liveDecay) queryWithLiveDecay(query)
         else graphObjectManager.loadAll<PropositionView> {
             where { applyFilters(query, includeEffectiveConfidence = true) }
             orderBy { applyOrder(query.orderBy) }
             query.limit?.let { limit(it) }
         }.map(PropositionGraphMapper::toProposition)
+        logger.debug("query returned {} proposition(s) (liveDecay={}, limit={})", results.size, liveDecay, query.limit)
+        return results
+    }
 
     @Transactional(readOnly = true)
     override fun query(query: PropositionQuery, withProvenance: Boolean): List<Proposition> {
@@ -308,18 +313,29 @@ open class DrivinePropositionRepository(
     context(builder: WhereBuilder<PropositionViewQueryDsl>)
     private fun applyFilters(query: PropositionQuery, includeEffectiveConfidence: Boolean) {
         query.contextId?.let { proposition.contextId eq it.value }
-        query.status?.let { proposition.status eq it.name }
+        query.statuses?.takeIf { it.isNotEmpty() }?.let { statuses ->
+            proposition.status inList statuses.map { it.name }
+        }
         query.minLevel?.let { proposition.level gte it }
         query.maxLevel?.let { proposition.level lte it }
         query.createdAfter?.let { proposition.created gte it }
         query.createdBefore?.let { proposition.created lte it }
-        query.revisedAfter?.let { proposition.contentRevised gte it }
-        query.revisedBefore?.let { proposition.contentRevised lte it }
+        query.revisedAfter?.let { proposition.lastTouched gte it }
+        query.revisedBefore?.let { proposition.lastTouched lte it }
         query.accessedAfter?.let { proposition.lastAccessed gte it }
         query.accessedBefore?.let { proposition.lastAccessed lte it }
         query.minImportance?.let { proposition.importance gte it }
         query.minReinforceCount?.let { proposition.reinforceCount gte it }
         if (includeEffectiveConfidence) query.minEffectiveConfidence?.let { proposition.effectiveConfidence gte it }
+        query.minTrustScore?.let { threshold ->
+            // Fail-open, matching the in-memory backend's passesMinTrust: an unscored proposition (no
+            // cached trust property) passes the gate, so the predicate is "missing OR >= threshold".
+            // Trust rides the @PropertyBag, stored flat as `metadata.<key>`, so it pushes into the DB.
+            anyOf {
+                proposition.metadata.key(DiceMetadataKeys.TRUST_SCORE).isNull()
+                proposition.metadata.key(DiceMetadataKeys.TRUST_SCORE) gte threshold
+            }
+        }
         query.entityId?.let { id -> mentions.any { resolvedId eq id } }
         query.anyEntityIds?.let { ids -> mentions.any { resolvedId inList ids } }
         query.allEntityIds?.forEach { id -> mentions.any { resolvedId eq id } }
@@ -330,7 +346,7 @@ open class DrivinePropositionRepository(
         when (orderBy) {
             OrderBy.EFFECTIVE_CONFIDENCE_DESC -> orderByEffectiveConfidenceDescNullsLast()
             OrderBy.CREATED_DESC -> proposition.created.desc()
-            OrderBy.REVISED_DESC -> proposition.contentRevised.desc()
+            OrderBy.REVISED_DESC -> proposition.lastTouched.desc()
             OrderBy.LAST_ACCESSED_DESC -> proposition.lastAccessed.desc()
             OrderBy.REINFORCE_COUNT_DESC -> proposition.reinforceCount.desc()
             OrderBy.IMPORTANCE_DESC -> proposition.importance.desc()
@@ -344,9 +360,11 @@ open class DrivinePropositionRepository(
     ): List<SimilarityResult<Proposition>> {
         val vector = embeddingService.embed(textSimilaritySearchRequest.query).toList()
         val threshold = textSimilaritySearchRequest.similarityThreshold.takeIf { it > 0.0 }
-        return graphObjectManager
+        val results = graphObjectManager
             .loadNearest<PropositionView>(vector, textSimilaritySearchRequest.topK, threshold)
             .map { SimilarityResult(match = PropositionGraphMapper.toProposition(it.value), score = it.score) }
+        logger.debug("findSimilarWithScores: {} hit(s) (topK={}, threshold={})", results.size, textSimilaritySearchRequest.topK, threshold)
+        return results
     }
 
     @Transactional(readOnly = true)
@@ -401,7 +419,7 @@ open class DrivinePropositionRepository(
                 .bind(mapOf("ids" to ids, "k" to topK + 1, "threshold" to similarityThreshold))
         ) as List<Map<String, Any>>
 
-        return rows
+        val clusters = rows
             .groupBy { it["anchorId"] as String }
             .mapNotNull { (anchorId, group) ->
                 val anchor = byId[anchorId] ?: return@mapNotNull null
@@ -416,6 +434,11 @@ open class DrivinePropositionRepository(
                 if (similar.isNotEmpty()) Cluster(anchor = anchor, similar = similar) else null
             }
             .sortedByDescending { it.similar.size }
+        logger.debug(
+            "findClusters: {} candidate(s) -> {} cluster(s) (threshold={}, topK={})",
+            candidates.size, clusters.size, similarityThreshold, topK,
+        )
+        return clusters
     }
 
     /** DELETE_ORPHAN (not DELETE_ALL) so shared `:Source` nodes survive unless this was their last reference. */
