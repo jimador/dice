@@ -16,6 +16,7 @@
 package com.embabel.dice.report
 
 import com.embabel.dice.proposition.Proposition
+import org.slf4j.LoggerFactory
 
 /**
  * Pure-structural, deterministic [ReportProjector].
@@ -30,6 +31,8 @@ import com.embabel.dice.proposition.Proposition
 data class StructuredReportProjector @JvmOverloads constructor(
     private val topN: Int = 5,
 ) : ReportProjector {
+
+    private val logger = LoggerFactory.getLogger(StructuredReportProjector::class.java)
 
     /**
      * Aggregate [propositions] into a [Report].
@@ -47,6 +50,7 @@ data class StructuredReportProjector @JvmOverloads constructor(
      */
     override fun report(propositions: List<Proposition>, title: String): Report {
         if (propositions.isEmpty()) {
+            logger.debug("report '{}': no propositions, returning empty", title)
             return Report.EMPTY.copy(title = title)
         }
 
@@ -62,7 +66,7 @@ data class StructuredReportProjector @JvmOverloads constructor(
             )
             .take(topN)
 
-        return Report(
+        val report = Report(
             title = title,
             totalCount = propositions.size,
             byStatus = byStatus,
@@ -70,6 +74,11 @@ data class StructuredReportProjector @JvmOverloads constructor(
             topByConfidence = topByConfidence,
             sourcePropositionIds = propositions.map { it.id },
         )
+        logger.debug(
+            "report '{}': {} total, {} status groups, {} level groups, top-{} by confidence",
+            title, report.totalCount, byStatus.size, byLevel.size, topByConfidence.size,
+        )
+        return report
     }
 
     companion object {

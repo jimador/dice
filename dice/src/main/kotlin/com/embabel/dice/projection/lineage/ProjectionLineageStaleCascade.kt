@@ -19,6 +19,7 @@ import com.embabel.dice.common.DiceEvent
 import com.embabel.dice.common.DiceEventListener
 import com.embabel.dice.common.PropositionStatusChanged
 import com.embabel.dice.proposition.PropositionStatus
+import org.slf4j.LoggerFactory
 
 /**
  * Listens for proposition status changes and marks the corresponding projection records stale.
@@ -38,9 +39,15 @@ class ProjectionLineageStaleCascade(
     private val recordStore: ProjectionRecordStore,
 ) : DiceEventListener {
 
+    private val logger = LoggerFactory.getLogger(ProjectionLineageStaleCascade::class.java)
+
     override fun onEvent(event: DiceEvent) {
         if (event is PropositionStatusChanged && event.newStatus in TERMINAL_STATUSES) {
-            recordStore.markStaleByProposition(event.proposition.id)
+            val updated = recordStore.markStaleByProposition(event.proposition.id)
+            logger.debug(
+                "Stale cascade for proposition {} ({}→{}): {} record(s) marked stale",
+                event.proposition.id.take(8), event.previousStatus, event.newStatus, updated,
+            )
         }
     }
 

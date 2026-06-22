@@ -87,6 +87,7 @@ open class DiceStorageAutoConfiguration {
         // Mirror Drivine's derived index name when none is configured, so findClusters' index lookup
         // stays in sync with whatever name the schema registered.
         val indexName = vi.name.ifBlank { "${vi.label}_${vi.property}_vector" }
+        logger.info("Wiring graph proposition store (Drivine/Neo4j), vector index '{}'", indexName)
         return DrivinePropositionRepository(
             graphObjectManager, persistenceManager, ai.withDefaultEmbeddingService(), transactionManager,
             vectorIndexName = indexName,
@@ -184,8 +185,10 @@ open class DiceStorageAutoConfiguration {
     @Bean
     @ConditionalOnBean(Ai::class)
     @ConditionalOnMissingBean(PropositionRepository::class)
-    open fun inMemoryPropositionRepository(ai: Ai): PropositionRepository =
-        InMemoryPropositionRepository(ai.withDefaultEmbeddingService())
+    open fun inMemoryPropositionRepository(ai: Ai): PropositionRepository {
+        logger.info("Wiring in-memory proposition store")
+        return InMemoryPropositionRepository(ai.withDefaultEmbeddingService())
+    }
 
     @Bean
     @ConditionalOnMissingBean(ChunkHistoryStore::class)

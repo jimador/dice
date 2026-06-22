@@ -24,6 +24,7 @@ import com.embabel.dice.proposition.PropositionStore
 import com.embabel.dice.proposition.TemporalQueryCapable
 import com.embabel.dice.proposition.VectorSearchCapable
 import com.embabel.dice.query.graph.GraphQuery
+import org.slf4j.LoggerFactory
 
 /**
  * The single retrieval router shared by every discovery presentation tier (MCP tools, REST).
@@ -46,6 +47,8 @@ class RetrievalRouter(
     private val contextId: ContextId,
 ) {
 
+    private val logger = LoggerFactory.getLogger(RetrievalRouter::class.java)
+
     /** Whether the fragment backing [mode] is present on the wrapped store. */
     fun supports(mode: RetrievalMode): Boolean = when (mode) {
         RetrievalMode.VECTOR -> store is VectorSearchCapable
@@ -62,23 +65,29 @@ class RetrievalRouter(
     fun retrieve(query: DiscoveryQuery): DiscoveryResult {
         val topK = clampTopK(query.topK)
         val depth = clampDepth(query.depth)
-        return when (query.mode) {
+        logger.debug("Routing {} query (topK={} depth={}) for context {}", query.mode, topK, depth, contextId.value.take(8))
+        val result = when (query.mode) {
             RetrievalMode.VECTOR -> vector(query.text, topK)
             RetrievalMode.ENTITY -> entity(query.entityId, topK)
             RetrievalMode.GRAPH_WALK -> graphWalk(query.entityId, depth, topK)
             RetrievalMode.TEMPORAL -> temporal(query, topK)
             RetrievalMode.HYBRID -> hybrid(query.text, query.entityId, depth, topK)
         }
+        logger.debug("Retrieval {} returned {} results (supported={})", query.mode, result.propositions.size, result.supported)
+        return result
     }
 
     /**
      * Path query mapped to leak-free path DTOs. The path edges are filtered to the bound context so
      * a caller can never observe an edge proposition belonging to another context.
      */
-    fun graphPath(entityIdA: String, entityIdB: String): List<PathDto> =
-        graphQuery.pathBetween(entityIdA, entityIdB)
+    fun graphPath(entityIdA: String, entityIdB: String): List<PathDto> {
+        val paths = graphQuery.pathBetween(entityIdA, entityIdB)
             .filter { path -> path.edges.all { it.contextId == contextId } }
             .map { PathDto.from(it) }
+        logger.debug("Graph path {} -> {}: {} path(s) found", entityIdA, entityIdB, paths.size)
+        return paths
+    }
 
     /**
      * Lineage query mapped to a leak-free lineage DTO (null when absent). Returns not-found (null)
@@ -96,7 +105,10 @@ class RetrievalRouter(
 
     private fun vector(text: String?, topK: Int): DiscoveryResult {
         val capable = store as? VectorSearchCapable
-            ?: return empty(RetrievalMode.VECTOR, supported = false)
+            ?: run {
+                logger.debug("VECTOR mode not supported by store {}", store::class.simpleName)
+                return empty(RetrievalMode.VECTOR, supported = false)
+            }
         if (text.isNullOrBlank()) return DiscoveryResult(RetrievalMode.VECTOR, supported = true, propositions = emptyList())
         val hits = capable.findSimilarWithScores(searchRequest(text, topK), scope()).map { it.match }
         return result(RetrievalMode.VECTOR, supported = true, props = hits)
@@ -120,7 +132,10 @@ class RetrievalRouter(
 
     private fun temporal(query: DiscoveryQuery, topK: Int): DiscoveryResult {
         val capable = store as? TemporalQueryCapable
-            ?: return empty(RetrievalMode.TEMPORAL, supported = false)
+            ?: run {
+                logger.debug("TEMPORAL mode not supported by store {}", store::class.simpleName)
+                return empty(RetrievalMode.TEMPORAL, supported = false)
+            }
         val from = query.from
         val to = query.to
         if (from == null || to == null) {

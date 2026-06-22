@@ -17,6 +17,7 @@ package com.embabel.dice.projection.lineage
 
 import com.embabel.agent.rag.service.NamedEntityDataRepository
 import com.embabel.dice.proposition.Proposition
+import org.slf4j.LoggerFactory
 
 /**
  * [Reconciler] that adopts an existing target node when a proposition's
@@ -43,12 +44,17 @@ class RepositoryBackedReconciler(
     private val repository: NamedEntityDataRepository,
 ) : Reconciler {
 
+    private val logger = LoggerFactory.getLogger(RepositoryBackedReconciler::class.java)
+
     override fun reconcile(proposition: Proposition, target: String): ReconciliationDecision {
-        proposition.mentions.asSequence()
+        val adoptId = proposition.mentions.asSequence()
             .mapNotNull { it.resolvedId }
             .firstOrNull { repository.findById(it) != null }
-            ?.let { return ReconciliationDecision.Adopt(it) }
-
+        if (adoptId != null) {
+            logger.debug("Adopt existing node {} for proposition {} -> {}", adoptId.take(8), proposition.id.take(8), target)
+            return ReconciliationDecision.Adopt(adoptId)
+        }
+        logger.debug("No existing node found for proposition {} -> {}; will create new", proposition.id.take(8), target)
         return ReconciliationDecision.CreateNew
     }
 }

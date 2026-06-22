@@ -77,6 +77,11 @@ data class LlmRationaleProjector(
         explain(group.propositions, groupLabel = group.label)
 
     private fun explain(propositions: List<Proposition>, groupLabel: String): RationaleArtifact {
+        logger.debug(
+            "Explaining {} proposition(s){}",
+            propositions.size,
+            if (groupLabel.isNotBlank()) " for group '$groupLabel'" else "",
+        )
         val propositionData = propositions.mapIndexed { index, p ->
             mapOf(
                 "index" to index,

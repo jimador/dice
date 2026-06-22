@@ -20,6 +20,7 @@ import com.embabel.dice.projection.lineage.ProjectionRecord
 import com.embabel.dice.projection.lineage.ProjectionRecordStore
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.slf4j.LoggerFactory
 import org.springframework.transaction.annotation.Transactional
 
 /**
@@ -36,12 +37,15 @@ open class DrivineProjectionRecordStore(
     private val persistenceManager: PersistenceManager,
 ) : ProjectionRecordStore {
 
+    private val logger = LoggerFactory.getLogger(DrivineProjectionRecordStore::class.java)
+
     /**
      * Upsert the record on its natural key (proposition + run + target) so a replayed projection
      * outcome updates in place rather than piling up duplicate nodes.
      */
     @Transactional
     override fun record(record: ProjectionRecord) {
+        logger.debug("Recording projection record proposition={} target={} lifecycle={}", record.propositionId.take(8), record.target, record.lifecycle)
         persistenceManager.execute(
             QuerySpecification.withStatement(
                 """
@@ -86,6 +90,8 @@ open class DrivineProjectionRecordStore(
                 .bind(mapOf("propositionId" to propositionId, "stale" to stale))
                 .transform(Long::class.java),
         )
-        return updated?.toInt() ?: 0
+        val count = updated?.toInt() ?: 0
+        logger.debug("markStaleByProposition {}: {} record(s) transitioned to STALE", propositionId.take(8), count)
+        return count
     }
 }

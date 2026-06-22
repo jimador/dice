@@ -24,6 +24,7 @@ import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionStore
 import com.embabel.dice.proposition.VectorSearchCapable
+import org.slf4j.LoggerFactory
 
 /**
  * Reference proposition store that backs persistence through Embabel's
@@ -77,6 +78,8 @@ class Neo4jRagPropositionRepository(
     val entityRepository: NamedEntityDataRepository,
 ) : PropositionStore by crud, VectorSearchCapable {
 
+    private val logger = LoggerFactory.getLogger(Neo4jRagPropositionRepository::class.java)
+
     /**
      * Disambiguates the diamond between [VectorSearchCapable.query] and [PropositionStore.query]
      * by forwarding to the supplementary store, giving the composed type a single unambiguous query.
@@ -90,9 +93,14 @@ class Neo4jRagPropositionRepository(
      */
     override fun findSimilarWithScores(
         textSimilaritySearchRequest: TextSimilaritySearchRequest,
-    ): List<SimilarityResult<Proposition>> =
-        (crud as? VectorSearchCapable)?.findSimilarWithScores(textSimilaritySearchRequest)
-            ?: emptyList()
+    ): List<SimilarityResult<Proposition>> {
+        val capable = crud as? VectorSearchCapable
+        if (capable == null) {
+            logger.debug("findSimilarWithScores: supplementary store {} is not vector-capable, returning empty", crud::class.simpleName)
+            return emptyList()
+        }
+        return capable.findSimilarWithScores(textSimilaritySearchRequest)
+    }
 
     /**
      * Filtered similarity search. Forwards to the supplementary store so any backend that
@@ -103,9 +111,14 @@ class Neo4jRagPropositionRepository(
     override fun findSimilarWithScores(
         textSimilaritySearchRequest: TextSimilaritySearchRequest,
         query: PropositionQuery,
-    ): List<SimilarityResult<Proposition>> =
-        (crud as? VectorSearchCapable)?.findSimilarWithScores(textSimilaritySearchRequest, query)
-            ?: emptyList()
+    ): List<SimilarityResult<Proposition>> {
+        val capable = crud as? VectorSearchCapable
+        if (capable == null) {
+            logger.debug("findSimilarWithScores(filtered): supplementary store {} is not vector-capable, returning empty", crud::class.simpleName)
+            return emptyList()
+        }
+        return capable.findSimilarWithScores(textSimilaritySearchRequest, query)
+    }
 
     /**
      * Proposition clustering. Forwards to the supplementary store so any backend-native

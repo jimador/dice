@@ -17,6 +17,7 @@ package com.embabel.dice.report
 
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionStatus
+import org.slf4j.LoggerFactory
 
 /**
  * Discovers indirect [SemanticLink]s between entities from a set of propositions.
@@ -62,8 +63,11 @@ interface SemanticLinkDiscoverer {
  */
 class TwoHopSemanticLinkDiscoverer : SemanticLinkDiscoverer {
 
+    private val logger = LoggerFactory.getLogger(TwoHopSemanticLinkDiscoverer::class.java)
+
     override fun discover(propositions: List<Proposition>): List<SemanticLink> {
         val active = propositions.filter { it.status == PropositionStatus.ACTIVE }
+        logger.debug("Two-hop discovery: {} proposition(s) in ({} active)", propositions.size, active.size)
 
         // Direct co-mention edges keyed by canonical unordered pair, with the set
         // of evidence proposition ids; plus a per-entity neighbour set.
@@ -105,7 +109,7 @@ class TwoHopSemanticLinkDiscoverer : SemanticLinkDiscoverer {
             }
         }
 
-        return links.entries
+        val result = links.entries
             .map { (pair, connecting) ->
                 SemanticLink(
                     sourceEntityId = pair.first,
@@ -123,6 +127,8 @@ class TwoHopSemanticLinkDiscoverer : SemanticLinkDiscoverer {
                     { it.connectingEntityIds.joinToString(",") },
                 ),
             )
+        logger.debug("Two-hop discovery: {} indirect link(s) found", result.size)
+        return result
     }
 
     private fun canonical(x: String, y: String): Pair<String, String> =

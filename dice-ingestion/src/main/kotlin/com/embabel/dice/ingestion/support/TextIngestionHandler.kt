@@ -28,6 +28,7 @@ import com.embabel.dice.ingestion.IngestionResult
 import com.embabel.dice.ingestion.InMemoryIngestionLedger
 import com.embabel.dice.pipeline.PropositionPipeline
 import com.embabel.dice.provenance.ProvenanceEntry
+import org.slf4j.LoggerFactory
 
 /**
  * The one shipped [IngestionHandler]: a normalized text front door that wraps the
@@ -64,12 +65,22 @@ class TextIngestionHandler @JvmOverloads constructor(
     private val contentHasher: ContentHasher = Sha256ContentHasher,
 ) : IngestionHandler {
 
+    private val logger = LoggerFactory.getLogger(TextIngestionHandler::class.java)
+
     override fun ingest(batch: IngestionBatch, context: SourceAnalysisContext): IngestionResult {
+        logger.info("Ingesting batch of {} artifact(s)", batch.artifacts.size)
         val outcomes = batch.artifacts.map { artifact ->
             runCatching { ingestOne(artifact, context) }
                 .getOrElse { ArtifactOutcome.Failed(artifact.sourceId, it) }
         }
-        return IngestionResult(outcomes)
+        val result = IngestionResult(outcomes)
+        logger.info(
+            "Batch complete: {} ingested, {} deduplicated, {} failed",
+            outcomes.count { it is ArtifactOutcome.Ingested },
+            outcomes.count { it is ArtifactOutcome.Deduplicated },
+            outcomes.count { it is ArtifactOutcome.Failed },
+        )
+        return result
     }
 
     private fun ingestOne(
@@ -78,6 +89,7 @@ class TextIngestionHandler @JvmOverloads constructor(
     ): ArtifactOutcome {
         val hash = artifact.contentHash ?: contentHasher.hash(artifact.text)
         if (!ledger.recordIfAbsent(hash)) {
+            logger.debug("Deduplicated artifact {} (hash {})", artifact.sourceId, hash.take(8))
             return ArtifactOutcome.Deduplicated(artifact.sourceId, hash)
         }
         // The hash is now claimed. Release it if extraction fails so a retry of
@@ -91,8 +103,10 @@ class TextIngestionHandler @JvmOverloads constructor(
                 contentHash = hash,
             )
             val grounded = result.propositions.map { it.withProvenanceEntries(listOf(entry)) }
+            logger.debug("Extracted {} proposition(s) from artifact {}", grounded.size, artifact.sourceId)
             ArtifactOutcome.Ingested(artifact.sourceId, grounded)
         } catch (e: Throwable) {
+            logger.warn("Extraction failed for artifact {}, releasing claim", artifact.sourceId, e)
             ledger.forget(hash)
             throw e
         }

@@ -20,6 +20,7 @@ import com.embabel.dice.projection.lineage.CollectorRecordStore
 import com.embabel.dice.projection.lineage.CollectorRun
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.slf4j.LoggerFactory
 import org.springframework.transaction.annotation.Transactional
 
 /**
@@ -36,8 +37,11 @@ open class DrivineCollectorRecordStore(
     private val persistenceManager: PersistenceManager,
 ) : CollectorRecordStore {
 
+    private val logger = LoggerFactory.getLogger(DrivineCollectorRecordStore::class.java)
+
     @Transactional
     override fun record(record: CollectorRecord) {
+        logger.debug("Recording collector record proposition={} run={} outcome={}", record.propositionId.take(8), record.runId.take(8), record.outcome)
         persistenceManager.execute(
             QuerySpecification.withStatement(
                 """
@@ -56,6 +60,7 @@ open class DrivineCollectorRecordStore(
 
     @Transactional
     override fun recordRun(run: CollectorRun) {
+        logger.debug("Recording collector run {} (dryRun={})", run.runId.take(8), run.dryRun)
         persistenceManager.execute(
             QuerySpecification.withStatement(
                 """
