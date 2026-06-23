@@ -15,8 +15,8 @@
  */
 package com.embabel.dice.projection.lineage
 
-import com.embabel.dice.projection.memory.MarkReason
 import com.embabel.dice.proposition.PropositionStatus
+import com.embabel.dice.spi.MarkReason
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows

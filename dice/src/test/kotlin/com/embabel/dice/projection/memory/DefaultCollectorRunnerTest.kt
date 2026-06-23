@@ -24,6 +24,11 @@ import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionRepository
 import com.embabel.dice.proposition.PropositionStatus
+import com.embabel.dice.spi.MarkReason
+import com.embabel.dice.spi.PropositionMark
+import com.embabel.dice.spi.StatusTransitionSweepPolicy
+import com.embabel.dice.spi.SweepAction
+import com.embabel.dice.spi.SweepPolicy
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot

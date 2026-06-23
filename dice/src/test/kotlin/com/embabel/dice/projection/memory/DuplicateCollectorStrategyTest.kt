@@ -20,6 +20,7 @@ import com.embabel.agent.rag.service.Cluster
 import com.embabel.common.core.types.SimilarityResult
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.spi.MarkReason
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify

@@ -18,6 +18,8 @@ package com.embabel.dice.projection.memory
 import com.embabel.agent.core.ContextId
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.spi.PropositionMark
+import com.embabel.dice.spi.SweepPolicy
 
 /**
  * The "mark" half of the mark-and-sweep collector: looks at candidate propositions and

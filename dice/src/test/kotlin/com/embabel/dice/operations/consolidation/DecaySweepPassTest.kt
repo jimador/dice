@@ -18,13 +18,13 @@ package com.embabel.dice.operations.consolidation
 import com.embabel.agent.core.ContextId
 import com.embabel.dice.projection.memory.CollectorRunner
 import com.embabel.dice.projection.memory.DecayCollectorStrategy
-import com.embabel.dice.projection.memory.PropositionMark
-import com.embabel.dice.projection.memory.SweepAction
-import com.embabel.dice.projection.memory.SweepPolicy
 import com.embabel.dice.proposition.EntityMention
 import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionRepository
 import com.embabel.dice.proposition.PropositionStatus
+import com.embabel.dice.spi.PropositionMark
+import com.embabel.dice.spi.SweepAction
+import com.embabel.dice.spi.SweepPolicy
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertEquals

@@ -19,6 +19,8 @@ import com.embabel.agent.core.ContextId
 import com.embabel.dice.common.DiceEventListener
 import com.embabel.dice.projection.lineage.CollectorRecordStore
 import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.spi.StatusTransitionSweepPolicy
+import com.embabel.dice.spi.SweepPolicy
 
 /**
  * Runs the mark-and-sweep collector for a context: selects ACTIVE propositions, hands them to

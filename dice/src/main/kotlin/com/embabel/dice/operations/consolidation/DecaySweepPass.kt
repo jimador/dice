@@ -18,6 +18,8 @@ package com.embabel.dice.operations.consolidation
 import com.embabel.agent.core.ContextId
 import com.embabel.dice.projection.memory.CollectorRunner
 import com.embabel.dice.proposition.Proposition
+import com.embabel.dice.spi.SweepAction
+import com.embabel.dice.spi.SweepPolicy
 
 /**
  * The decay pass in a consolidation cycle: a thin wrapper that delegates entirely to an injected
@@ -32,7 +34,7 @@ import com.embabel.dice.proposition.Proposition
  * The behavior depends on the [SweepPolicy] the runner was built with. The default policy retires
  * propositions softly to `STALE` and never hard-deletes, so a [DecaySweepPass] over a default
  * runner is non-destructive. For hard-delete, build the runner with a policy that returns
- * `SweepAction.HardDelete` for stale marks — this pass surfaces those deletes in its summary
+ * [SweepAction.HardDelete] for stale marks — this pass surfaces those deletes in its summary
  * but never puts ids in [ConsolidationPassResult.Changed.propositionsToDelete].
  *
  * ## Dual-threshold hysteresis

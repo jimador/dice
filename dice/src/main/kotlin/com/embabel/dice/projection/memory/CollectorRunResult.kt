@@ -15,6 +15,7 @@
  */
 package com.embabel.dice.projection.memory
 
+import com.embabel.dice.spi.PropositionMark
 import java.time.Instant
 
 /**

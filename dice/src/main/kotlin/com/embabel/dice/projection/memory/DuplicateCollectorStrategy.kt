@@ -20,6 +20,8 @@ import com.embabel.dice.proposition.Proposition
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionRepository
 import com.embabel.dice.proposition.PropositionStatus
+import com.embabel.dice.spi.MarkReason
+import com.embabel.dice.spi.PropositionMark
 import org.slf4j.LoggerFactory
 
 /**
