@@ -101,7 +101,11 @@ recover by reading a single class — see the design notes in [`docs/design/`](d
 - [Proposition lifecycle](docs/design/proposition-lifecycle.md) — trust scoring, source authority,
   conflict classification, supersession versus contradiction, and decay instead of deletion.
 - [Knowledge hygiene](docs/design/knowledge-hygiene.md) — admission gates, mark-and-sweep
-  reclamation, and the consolidation dream loop.
+  reclamation, and the consolidation dream loop (the "why" overview of the three interventions).
+- [Consolidation and the dream loop](docs/design/consolidation-and-dream-loop.md) — the pass
+  abstraction, the four consolidation passes, and how a cycle composes and is triggered.
+- [Reclamation and the collector](docs/design/reclamation-and-collector.md) — the mark-and-sweep
+  internals: strategies, sweep policy, dry-run vs. live, and the audit trail.
 - [Events](docs/design/events.md) — the domain-event model the store and pipeline emit.
 
 ## Real-World Example: Impromptu

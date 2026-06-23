@@ -52,6 +52,9 @@ Reclamation borrows the shape of a tracing garbage collector on purpose: one sta
 looks like garbage*, a separate stage decides *what to do about it*, and every action leaves a
 record.
 
+The internals — the strategies, the sweep policy, the entry points, and the audit trail — are in
+[reclamation-and-collector](reclamation-and-collector.md); this section is the why.
+
 Splitting "mark" from "sweep" keeps two independent judgments independent. A marker flags a
 proposition with a reason — it's gone **stale**, it's a **duplicate** of a survivor, or some
 domain-specific reason — without committing to a fate. The sweep policy then chooses the fate:
@@ -99,6 +102,9 @@ sequenceDiagram
 Admission and reclamation keep the store from filling with bad data, but they don't make good data
 *better*. That's the job of the dream loop: a set of consolidation passes that run as repeatable
 cycles, ideally during idle time, to tidy what's already there.
+
+How the passes compose into a cycle, and how the loop is triggered and locked, is in
+[consolidation-and-dream-loop](consolidation-and-dream-loop.md); this section is the why.
 
 The passes are composable and each does one thing: fold a session's raw facts together, abstract a
 cluster of related facts into a higher-level proposition, resolve lingering contradictions, and
