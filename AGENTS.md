@@ -48,12 +48,14 @@ The `dice` module is organized by responsibility:
 | `com.embabel.dice.proposition.extraction` | `PropositionExtractor` SPI, `LlmPropositionExtractor` |
 | `com.embabel.dice.proposition.revision` | `PropositionReviser` SPI, `LlmPropositionReviser` |
 | `com.embabel.dice.proposition.store` | In-memory and JSON-file implementations of `PropositionRepository` and `DecayManager` |
-| `com.embabel.dice.pipeline` | `PropositionPipeline` — the orchestrating entry point that chains extractor → entity resolver → reviser |
+| `com.embabel.dice.proposition.gate` | Admission gates that route pipeline output before persistence (`ExtractionGate`, `ExtractionGatePipeline`, `StandardGates`, `EvidenceFloorGate`) |
+| `com.embabel.dice.pipeline` | `PropositionPipeline` — the two-stage entry point (concurrent extraction → serial entity resolution); pluggable `ExtractionExecutionStrategy` (serial / parallel / batched) |
 | `com.embabel.dice.spi` | Policy extension points consumers plug into: `TrustScorer`, `AuthorityResolver`/`AuthorityTier`, `AuthorityWeightedTrustScorer`, `ConflictDetector`, `ConflictType`, `StatusTransitionPolicy`, and their shipped defaults |
 | `com.embabel.dice.common` | Shared types: `SourceAnalysisContext`, `EntityResolver`, `Relations`, `ContentHasher`, `KnowledgeType`, events, validation rules, mention filters, resolver implementations |
 | `com.embabel.dice.entity` | Entity-only pipeline (`EntityPipeline`, `EntityIncrementalAnalyzer`, `EntityResolutionService`, `EntityResolutionTools`) |
 | `com.embabel.dice.incremental` | `AbstractIncrementalAnalyzer`, `ChunkHistoryStore`, `ConversationSource`, windowed processing |
-| `com.embabel.dice.projection` | Projectors: `GraphProjector`, `PrologProjector`, `MemoryProjector`; lineage tracking (`ProjectionRecordStore`, `Reconciler`) |
+| `com.embabel.dice.projection` | Projectors (`GraphProjector`, `PrologProjector`, `MemoryProjector`); memory maintenance and the dream loop (`MemoryMaintenanceOrchestrator`, `DreamLoopOrchestrator`); the mark-and-sweep collector (`CollectorRunner`, `CollectorStrategy`, `SweepPolicy`) and its audit trail (`CollectorRecordStore`); lineage tracking (`ProjectionRecordStore`, `Reconciler`) |
+| `com.embabel.dice.operations` | Higher-level proposition operations (`PropositionAbstractor`, `PropositionContraster`) and, under `operations.consolidation`, the passes that compose the dream loop (`SessionConsolidationPass`, `AbstractionPass`, `ContradictionResolutionPass`, `DecaySweepPass`) |
 | `com.embabel.dice.text2graph` | Text-to-graph builder pipeline (`KnowledgeGraphBuilder`, `SourceAnalyzer`, entity merge/relationship resolution policies) |
 | `com.embabel.dice.provenance` | `ProvenanceEntry`, `SourceLocator` — rich evidence links from propositions back to source material |
 | `com.embabel.dice.query.oracle` | `Oracle`, `LlmOracle`, `PrologTools` — natural language question answering over propositions |
@@ -80,4 +82,7 @@ The `dice` module is organized by responsibility:
 - **Understanding the proposition data model** → `Proposition.kt` in `com.embabel.dice.proposition`. Every field is documented inline.
 - **Adding a new entity resolver strategy** → implement `CandidateSearcher` in `com.embabel.dice.common.resolver.searcher`, then compose it into an `EscalatingEntityResolver`.
 - **Writing integration tests against Neo4j** → look at `DrivinePropositionStoreIntegrationTest` in `dice-storage/src/test`; it shows the `@SpringBootTest` + Testcontainers pattern in use.
-- **Understanding *why* the system behaves as it does** → `docs/design/` holds the design-decision notes — the conceptual model and the reasoning you can't recover by reading a class (e.g. the proposition lifecycle: trust, authority, supersession, decay).
+- **Tuning what gets into the store** → admission gates in `com.embabel.dice.proposition.gate` (`ExtractionGatePipeline`, `StandardGates`); they run on pipeline output before the caller persists.
+- **Running maintenance / consolidation** → `DefaultDreamLoopOrchestrator` (threshold-gated consolidation passes) or `DefaultMemoryMaintenanceOrchestrator` (the legacy four-step pipeline), both in `com.embabel.dice.projection.memory`.
+- **Reclaiming stale or duplicate propositions** → `DefaultCollectorRunner` plus its `CollectorStrategy`/`SweepPolicy` in `com.embabel.dice.projection.memory`; runs are auditable via `CollectorRecordStore`.
+- **Understanding *why* the system behaves as it does** → [`docs/design/`](docs/design/) holds the design-decision notes — the conceptual model and the reasoning you can't recover by reading a class: the extraction pipeline, the proposition lifecycle (trust, authority, supersession, decay), knowledge hygiene (gates, reclamation, consolidation), and the event model.

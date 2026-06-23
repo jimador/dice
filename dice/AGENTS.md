@@ -33,6 +33,18 @@ Kotlin 2.1.10, Java 21. `embabel-agent-api` and `embabel-agent-rag-core` are `pr
 
 **`SourceAnalysisContext`** (`com.embabel.dice.common.SourceAnalysisContext`) — carries everything a pipeline run needs: schema (`DataDictionary`), entity resolver, `contextId`, optional known entities and template model. In Kotlin use infix builders; in Java use the `withXxx` builder chain.
 
+## Knowledge hygiene: admission, reclamation, consolidation
+
+Three seams keep the store healthy at three different moments; all ship conservative, pluggable defaults.
+
+**Admission — gates.** `ExtractionGate` (`com.embabel.dice.proposition.gate`) runs on pipeline output *before* the caller persists. `ExtractionGatePipeline` chains gates; the first non-`Persist` decision wins. `StandardGates` ships confidence/trust/conflict/evidence-floor gates; `EvidenceFloorGate` demotes a weak relation rather than dropping the fact.
+
+**Reclamation — the mark-and-sweep collector.** `CollectorRunner`/`DefaultCollectorRunner` (`com.embabel.dice.projection.memory`) fetch ACTIVE candidates, gather marks from each `CollectorStrategy` (stale via `DecayCollectorStrategy`, duplicates via `DuplicateCollectorStrategy`), then let a `SweepPolicy` decide each one's fate (`TransitionStatus`/`HardDelete`/`Skip`). `run(dryRun = true)` previews without writing; `collect()` marks only. Every run is recorded in a `CollectorRecordStore` for audit.
+
+**Consolidation — the dream loop.** `DreamLoopOrchestrator`/`DefaultDreamLoopOrchestrator` run `ConsolidationPass`es (`operations.consolidation`) as a threshold-gated cycle: `SessionConsolidationPass`, `AbstractionPass` (drives supersession), `ContradictionResolutionPass` (drives contradiction), `DecaySweepPass` (drives stale). The orchestrator owns all writes and locks per `contextId` so cycles for one context never overlap.
+
+These map onto the lifecycle in [proposition-lifecycle](../docs/design/proposition-lifecycle.md); the design notes in [`docs/design/`](../docs/design/) explain the *why* behind each.
+
 ## Package map
 
 | Package | Contents |
@@ -41,7 +53,8 @@ Kotlin 2.1.10, Java 21. `embabel-agent-api` and `embabel-agent-rag-core` are `pr
 | `proposition.extraction` | `PropositionExtractor`, `LlmPropositionExtractor`, extraction config |
 | `proposition.revision` | `PropositionReviser`, `LlmPropositionReviser` |
 | `proposition.store` | `InMemoryPropositionRepository`, `JsonFilePropositionRepository`, `InMemoryDecayManager` |
-| `pipeline` | `PropositionPipeline`, `PropositionResults`, persistence helpers |
+| `proposition.gate` | Admission gates applied to pipeline output before persistence: `ExtractionGate`, `ExtractionGatePipeline`, `StandardGates`, `ObservableGate`, `GateDecision`, `GatedPropositionResult`, `EvidenceFloorGate` |
+| `pipeline` | `PropositionPipeline` (two-stage extract→resolve), `PropositionResults`, `PersistablePropositions`; execution strategies: `ExtractionExecutionStrategy` + `SerialExtractionStrategy`/`ParallelExtractionStrategy`/`BatchedExtractionStrategy` |
 | `spi` | Policy extension points: `TrustScorer`, `AuthorityResolver`/`AuthorityTier`, `AuthorityWeightedTrustScorer`, `ConflictDetector`, `ConflictType`, `StatusTransitionPolicy`, and their shipped defaults |
 | `common` | `SourceAnalysisContext`, `EntityResolver`, `Relations`, `ContentHasher`, `KnowledgeType`, events, `SchemaAdherence`, validation rules |
 | `common.filter` | `MentionFilter`, `SchemaValidatedMentionFilter`, `ObservableMentionFilter`, context-aware filters |
@@ -51,9 +64,9 @@ Kotlin 2.1.10, Java 21. `embabel-agent-api` and `embabel-agent-rag-core` are `pr
 | `incremental` | `AbstractIncrementalAnalyzer`, `ChunkHistoryStore`, `InMemoryChunkHistoryStore`, `ConversationSource`, `IncrementalSource` |
 | `incremental.proposition` | `PropositionIncrementalAnalyzer` |
 | `projection.graph` | `GraphProjector`, `RelationBasedGraphProjector`, `LlmGraphProjector`, `GraphProjectionService`, `ProjectionPolicy` |
-| `projection.memory` | `MemoryProjector`, `MemoryRetriever`, `MemoryConsolidator`, `MemoryMaintenanceOrchestrator`, `DefaultMemoryProjector` |
+| `projection.memory` | `MemoryProjector`/`DefaultMemoryProjector`, `MemoryRetriever`, `MemoryConsolidator`; **maintenance & dream loop**: `MemoryMaintenanceOrchestrator`/`DefaultMemoryMaintenanceOrchestrator`, `DreamLoopOrchestrator`/`DefaultDreamLoopOrchestrator`, `DreamLoopReport`; **mark-and-sweep collector**: `CollectorRunner`/`DefaultCollectorRunner`, `CollectorStrategy` (`DecayCollectorStrategy`, `DuplicateCollectorStrategy`), `SweepPolicy`/`StatusTransitionSweepPolicy`, `SweepAction`, `PropositionMark`, `MarkReason`, `CollectorRunResult` |
 | `projection.prolog` | `PrologProjector`, `PrologEngine`, Prolog type wrappers |
-| `projection.lineage` | `ProjectionRecordStore`, `InMemoryProjectionRecordStore`, `Reconciler`, `ProjectionRecord`, `ProjectionRun` |
+| `projection.lineage` | `ProjectionRecordStore`, `InMemoryProjectionRecordStore`, `Reconciler`, `ProjectionRecord`, `ProjectionRun`; **collector audit trail**: `CollectorRecordStore`/`InMemoryCollectorRecordStore`, `CollectorRecord`, `CollectorRun`, `CollectorOutcome` |
 | `projection.grounding` | `GroundingResolver`, `GroundingWiringService` |
 | `text2graph` | `KnowledgeGraphBuilder`, `SourceAnalyzer`, `LlmSourceAnalyzer`, `MultiPassKnowledgeGraphBuilder`, merge policies, relationship resolution |
 | `provenance` | `ProvenanceEntry`, `SourceLocator`, `UriLocator` |
@@ -62,6 +75,7 @@ Kotlin 2.1.10, Java 21. `embabel-agent-api` and `embabel-agent-rag-core` are `pr
 | `agent` | `Memory`, `MemoryRetriever` (agent-facing view), `ProvenanceResolver` |
 | `web.rest` | `PropositionPipelineController`, `MemoryController`, API key security — optional, activated by `spring-webmvc` |
 | `operations` | `PropositionAbstractor`, `PropositionContraster` — higher-level proposition management |
+| `operations.consolidation` | The dream-loop steps as composable passes: `ConsolidationPass`/`ConsolidationPassResult`, `SessionConsolidationPass`, `AbstractionPass`, `ContradictionResolutionPass`, `DecaySweepPass` |
 
 ## Gotchas
 
