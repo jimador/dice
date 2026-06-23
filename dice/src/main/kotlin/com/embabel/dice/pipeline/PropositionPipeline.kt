@@ -43,6 +43,7 @@ import com.embabel.dice.proposition.revision.PropositionReviser
 import com.embabel.dice.proposition.revision.RevisionResult
 import org.slf4j.LoggerFactory
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Pipeline for extracting propositions from chunks.
@@ -383,13 +384,15 @@ class PropositionPipeline private constructor(
         // Extraction stage — resolver-free extraction, dispatched via the execution strategy (parallelizable).
         // A failed extraction yields a null slot; input order is preserved by the strategy.
         // Capture the cause per chunk so we can produce a typed Failed result in the resolution stage.
-        val failures = HashMap<String, Throwable>()
+        // ConcurrentHashMap so a concurrent execution strategy can record failures safely without an
+        // external lock; the resolution stage reads it only after every extraction has been joined.
+        val failures = ConcurrentHashMap<String, Throwable>()
         val extractions: List<ExtractionStageResult?> =
             executionStrategy.execute(chunks) { chunk ->
                 runCatching { extractStage(chunk, crossChunkContext) }
                     .getOrElse { e ->
                         logger.warn("Extraction failed for chunk {}: {}", chunk.id, e.message, e)
-                        synchronized(failures) { failures[chunk.id] = e }
+                        failures[chunk.id] = e
                         throw e // let the strategy's runCatching map this to a null slot
                     }
             }

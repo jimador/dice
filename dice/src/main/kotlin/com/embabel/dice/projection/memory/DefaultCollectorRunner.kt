@@ -44,6 +44,12 @@ import java.util.UUID
  * - [run] with `dryRun = false` applies each decision, saves the run record, then emits a
  *   [PropositionStatusChanged] per applied transition.
  *
+ * Concurrency: holds no shared mutable state — every [run] call works with its own locals — so
+ * runs for different contexts are safe in parallel. Two runs for the *same* context at once are
+ * not corrupting but are wasteful: both read the same ACTIVE set and the second simply re-applies
+ * or skips already-transitioned propositions. Serialize per context at the scheduling layer if that
+ * matters (the [DefaultDreamLoopOrchestrator] that normally drives this already locks per context).
+ *
  * @param repository Proposition store to read candidates from and write transitions to.
  * @param strategies Mark strategies run during the mark phase.
  * @param policy Policy deciding each marked proposition's fate.

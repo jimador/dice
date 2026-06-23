@@ -40,6 +40,11 @@ import kotlin.math.min
  * - Partial name matching (e.g., "Holmes" matches "Sherlock Holmes")
  * - Levenshtein distance for fuzzy matching
  *
+ * Not thread-safe: it keeps a plain mutable map of remembered entities, so a single instance must
+ * not be shared across concurrent callers. This is by design — `PropositionPipeline.process` builds
+ * a fresh resolver per run and only calls it from the serial resolution stage, so the memory stays
+ * scoped to one run and never sees concurrent access.
+ *
  * @param config Configuration for matching thresholds
  */
 class InMemoryEntityResolver(

@@ -45,6 +45,11 @@ private val logger = LoggerFactory.getLogger("com.embabel.dice.projection.memory
  *   dream-loop which soft-transitions them to STALE by default. This preserves the original
  *   behavior for backward compatibility.
  *
+ * Persistence is per-step, not transactional: the abstraction step saves each entity group as it
+ * goes, so if a later group throws, earlier groups are already written. That's safe here because
+ * [maintain] re-runs abstraction from the level-0 snapshot on every call, so the next call simply
+ * re-processes whatever didn't finish — partial state heals itself rather than corrupting.
+ *
  * @param repository Storage backend for propositions.
  * @param consolidator Decides how session propositions are folded into long-term memory.
  * @param abstractor Optional; synthesizes higher-level insights from entity groups.

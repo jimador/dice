@@ -56,11 +56,24 @@ data class DefaultDreamLoopOrchestrator(
      * Tracks the last-seen ACTIVE count per context, used by the change-volume trigger.
      *
      * Kept outside the primary constructor on purpose: it's mutable runtime state, not part of
-     * this orchestrator's value identity. That way [copy]-built instances each start with their
-     * own clean baseline (no shared state), and two orchestrators whose counters have diverged
-     * still compare as equal. Thread-safe via [ConcurrentHashMap].
+     * this orchestrator's value identity. That isolation comes from [copy] re-running this field
+     * initializer (it copies constructor properties only), so a copy starts with its own clean
+     * baseline rather than sharing this map; two orchestrators whose counters have diverged still
+     * compare as equal. Thread-safe via [ConcurrentHashMap].
      */
     private val lastActiveCount: ConcurrentHashMap<ContextId, Int> = ConcurrentHashMap()
+
+    /**
+     * One lock per context, so a full cycle for a given context runs start-to-finish without
+     * another cycle for the same context interleaving. Without this, two triggers for the same
+     * context could both pass the change-volume gate on the same stale count and run overlapping
+     * cycles. Different contexts lock independently and still run concurrently. Like
+     * [lastActiveCount], this is per-instance runtime state — serialization holds within a single
+     * shared orchestrator instance, which is the intended deployment.
+     */
+    private val cycleLocks: ConcurrentHashMap<ContextId, Any> = ConcurrentHashMap()
+
+    private fun lockFor(contextId: ContextId): Any = cycleLocks.computeIfAbsent(contextId) { Any() }
 
     override fun withPass(pass: ConsolidationPass): DefaultDreamLoopOrchestrator =
         copy(passes = passes + pass)
@@ -73,7 +86,9 @@ data class DefaultDreamLoopOrchestrator(
     fun withChangeVolumeThreshold(threshold: Int): DefaultDreamLoopOrchestrator =
         copy(changeVolumeThreshold = threshold)
 
-    override fun consolidate(contextId: ContextId): DreamLoopReport? {
+    override fun consolidate(contextId: ContextId): DreamLoopReport? = synchronized(lockFor(contextId)) {
+        // Hold the per-context lock across the gate check and the cycle so the threshold decision
+        // and the count update can't race a concurrent trigger for the same context.
         val currentActive = activeSnapshot(contextId).size
         val delta = currentActive - (lastActiveCount[contextId] ?: 0)
         if (delta < changeVolumeThreshold) {
@@ -85,10 +100,11 @@ data class DefaultDreamLoopOrchestrator(
             )
             return null
         }
+        // Reentrant: consolidateNow takes the same per-context lock.
         return consolidateNow(contextId)
     }
 
-    override fun consolidateNow(contextId: ContextId): DreamLoopReport {
+    override fun consolidateNow(contextId: ContextId): DreamLoopReport = synchronized(lockFor(contextId)) {
         val cycleStarted = Instant.now()
 
         // (1) Fetch the ACTIVE snapshot once.
