@@ -20,8 +20,8 @@ import com.embabel.dice.projection.lineage.CollectorRecord
 import com.embabel.dice.projection.lineage.CollectorRun
 import com.embabel.dice.projection.lineage.ProjectionLifecycle
 import com.embabel.dice.projection.lineage.ProjectionRecord
-import com.embabel.dice.projection.memory.MarkReason
 import com.embabel.dice.proposition.PropositionStatus
+import com.embabel.dice.spi.MarkReason
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.AfterEach

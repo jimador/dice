@@ -26,9 +26,9 @@ import com.embabel.dice.projection.lineage.ProjectionLineageStaleCascade
 import com.embabel.dice.projection.lineage.ProjectionRecord
 import com.embabel.dice.projection.memory.DecayCollectorStrategy
 import com.embabel.dice.projection.memory.DefaultCollectorRunner
-import com.embabel.dice.projection.memory.StatusTransitionSweepPolicy
 import com.embabel.dice.proposition.PropositionStatus
 import com.embabel.dice.proposition.store.InMemoryPropositionRepository
+import com.embabel.dice.spi.StatusTransitionSweepPolicy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test

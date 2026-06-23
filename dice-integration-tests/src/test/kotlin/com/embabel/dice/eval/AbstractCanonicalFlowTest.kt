@@ -27,13 +27,13 @@ import com.embabel.dice.projection.lineage.InMemoryProjectionRecordStore
 import com.embabel.dice.projection.lineage.ProjectionLifecycle
 import com.embabel.dice.projection.memory.DecayCollectorStrategy
 import com.embabel.dice.projection.memory.DefaultCollectorRunner
-import com.embabel.dice.projection.memory.StatusTransitionSweepPolicy
 import com.embabel.dice.proposition.PropositionQuery
 import com.embabel.dice.proposition.PropositionRepository
 import com.embabel.dice.proposition.PropositionStatus
 import com.embabel.dice.query.graph.GraphQuery
 import com.embabel.dice.report.StructuredReportProjector
 import com.embabel.dice.report.TwoHopSemanticLinkDiscoverer
+import com.embabel.dice.spi.StatusTransitionSweepPolicy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull

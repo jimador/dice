@@ -66,7 +66,7 @@ class DiscoveryDtoLeakTest {
         "com.embabel.dice.query.graph.PropositionLineage",
         "com.embabel.dice.projection.lineage.ProjectionRecord",
         "com.embabel.dice.projection.memory.CollectorRunResult",
-        "com.embabel.dice.projection.memory.PropositionMark",
+        "com.embabel.dice.spi.PropositionMark",
     )
 
     @Test
