@@ -35,7 +35,9 @@ import com.embabel.dice.proposition.revision.RevisionResult
  *
  * // A simple confidence gate.
  * val confidenceGate = ExtractionGate { proposition, _ ->
- *     val decision = if (proposition.confidence < 0.5) {
+ *     // Use effectiveConfidence() (decay-adjusted), not the raw extraction-time confidence,
+ *     // so the gate threshold stays consistent with the query layer.
+ *     val decision = if (proposition.effectiveConfidence() < 0.5) {
  *         GateDecision.Reject("confidence below threshold")
  *     } else {
  *         GateDecision.Persist
@@ -154,8 +156,17 @@ data class GatedPropositionResult(
     val evaluations: List<GateEvaluation>,
     val finalDecision: GateDecision,
 ) {
-    /** True when the proposition should be persisted normally. */
+    /** True when the proposition should be persisted normally (a plain [GateDecision.Persist]). */
     val shouldPersist: Boolean get() = finalDecision is GateDecision.Persist
+
+    /**
+     * True when the proposition should be written to storage at all — that is, every decision
+     * except [GateDecision.Reject] and [GateDecision.RouteToReview]. Use this (not [shouldPersist])
+     * to guard a `save()`, since [GateDecision.Demote] and [GateDecision.SkipProjection] both keep
+     * the proposition; they only change how it is projected.
+     */
+    val shouldSave: Boolean
+        get() = finalDecision !is GateDecision.Reject && finalDecision !is GateDecision.RouteToReview
 
     /** True when the proposition should be routed to review. */
     val shouldReview: Boolean get() = finalDecision is GateDecision.RouteToReview
