@@ -74,8 +74,10 @@ class ContradictionResolutionPass @JvmOverloads constructor(
                         val weaker =
                             if (p.effectiveConfidence() < c.proposition.effectiveConfidence()) p
                             else c.proposition
-                        if (weaker.status == PropositionStatus.ACTIVE) {
-                            // withStatus preserves the contentRevised decay anchor.
+                        if (weaker.status == PropositionStatus.ACTIVE && !weaker.pinned) {
+                            // withStatus preserves the contentRevised decay anchor. A pinned
+                            // proposition is conflict-protected — never auto-retired — so a
+                            // contradiction against it is left for explicit resolution.
                             toSave += weaker.withStatus(PropositionStatus.CONTRADICTED)
                         }
                     }

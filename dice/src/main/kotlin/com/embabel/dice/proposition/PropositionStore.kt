@@ -79,6 +79,7 @@ internal fun PropositionQuery.matchesFilters(
     }
     if (minImportance != null && prop.importance < minImportance) return false
     if (minReinforceCount != null && prop.reinforceCount < minReinforceCount) return false
+    if (pinned != null && prop.pinned != pinned) return false
     return prop.passesMinTrust(minTrustScore)
 }
 
@@ -169,6 +170,30 @@ interface PropositionStore {
      * Get the total count of propositions.
      */
     fun count(): Int
+
+    // ========================================================================
+    // Pinning — "must retain" propositions that resist eviction and decay
+    // ========================================================================
+
+    /**
+     * Pin a proposition so it resists reclamation: pinned propositions are skipped by the decay
+     * collector and the sweep policy, are decay-exempt in the default status policy, and are not
+     * auto-retired by contradiction resolution.
+     *
+     * @return the saved pinned proposition, or `null` if no proposition has [id].
+     */
+    fun pin(id: String): Proposition? = findById(id)?.let { save(it.withPinned(true)) }
+
+    /**
+     * Clear a proposition's pin, returning it to normal reclamation.
+     *
+     * @return the saved proposition, or `null` if no proposition has [id].
+     */
+    fun unpin(id: String): Proposition? = findById(id)?.let { save(it.withPinned(false)) }
+
+    /** All pinned propositions in [contextId]. */
+    fun findPinned(contextId: ContextId): List<Proposition> =
+        query(PropositionQuery.forContextId(contextId).withPinned(true))
 
     // ========================================================================
     // Composable query - consolidates filtering, ordering, limiting

@@ -49,7 +49,8 @@ class DecayCollectorStrategy @JvmOverloads constructor(
         contextId: ContextId,
     ): List<PropositionMark> {
         val marks = candidates
-            .filter { it.effectiveConfidence(retireDecayK) < retireBelow }
+            // Pinned propositions are decay-immune: never mark them, even below the threshold.
+            .filter { !it.pinned && it.effectiveConfidence(retireDecayK) < retireBelow }
             .map { PropositionMark(propositionId = it.id, reason = MarkReason.Stale, strategyName = STRATEGY_NAME) }
         logger.debug("DecayCollectorStrategy: marked {} of {} candidates as stale (threshold={})", marks.size, candidates.size, retireBelow)
         return marks

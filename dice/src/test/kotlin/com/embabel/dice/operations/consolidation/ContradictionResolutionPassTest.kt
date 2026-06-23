@@ -41,6 +41,7 @@ class ContradictionResolutionPassTest {
         confidence: Double,
         status: PropositionStatus = PropositionStatus.ACTIVE,
         contentRevised: Instant = Instant.now(),
+        pinned: Boolean = false,
     ): Proposition =
         Proposition(
             id = id,
@@ -51,6 +52,7 @@ class ContradictionResolutionPassTest {
             decay = 0.1,
             status = status,
             contentRevised = contentRevised,
+            pinned = pinned,
         )
 
     @Test
@@ -119,6 +121,26 @@ class ContradictionResolutionPassTest {
         val transitioned = changed.propositionsToSave.single()
         assertEquals("b", transitioned.id)
         assertEquals(PropositionStatus.CONTRADICTED, transitioned.status)
+    }
+
+    @Test
+    fun `a pinned proposition is never retired by contradiction resolution`() {
+        // The pinned one has the LOWER confidence, so it would normally lose — but pinned
+        // propositions are conflict-protected and must survive.
+        val pinned = proposition("a", "bob", 0.2, pinned = true)
+        val strong = proposition("b", "bob", 0.9)
+        val reviser = mockk<PropositionReviser>()
+        every { reviser.classify(pinned, listOf(strong)) } returns listOf(
+            ClassifiedProposition(strong, PropositionRelation.CONTRADICTORY, 0.5),
+        )
+        every { reviser.classify(strong, listOf(pinned)) } returns listOf(
+            ClassifiedProposition(pinned, PropositionRelation.CONTRADICTORY, 0.5),
+        )
+
+        val result = ContradictionResolutionPass(reviser).run(contextId, listOf(pinned, strong))
+
+        // Nothing retired: the only loser would have been the pinned proposition.
+        assertInstanceOf(ConsolidationPassResult.NoOp::class.java, result)
     }
 
     @Test

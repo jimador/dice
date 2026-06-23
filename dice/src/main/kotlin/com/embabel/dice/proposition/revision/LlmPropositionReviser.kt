@@ -513,17 +513,28 @@ data class LlmPropositionReviser(
             contradictory != null -> {
                 val original = repository.findById(contradictory.proposition.id)
                     ?: contradictory.proposition
-                val reducedConfidence = (original.confidence * 0.3).coerceAtLeast(0.05)
-                // Accelerate decay so contradicted propositions fade faster
-                val acceleratedDecay = (original.decay + 0.15).coerceAtMost(1.0)
-                val contradicted = original
-                    .withConfidence(reducedConfidence)
-                    .withStatus(PropositionStatus.CONTRADICTED)
-                    .copy(decay = acceleratedDecay, lastAccessed = Instant.now())
-                logger.debug(
-                    "Contradicted: {} (conf: {}, decay: {}) vs new: {}",
-                    original.text, reducedConfidence, acceleratedDecay, newProposition.text
-                )
+                // A pinned original is conflict-protected: a contradicting fact never auto-demotes
+                // it. Keep it untouched and store the new proposition alongside, leaving the
+                // conflict for explicit resolution.
+                val contradicted = if (original.pinned) {
+                    logger.debug(
+                        "Contradiction with pinned original kept intact: {} vs new: {}",
+                        original.text, newProposition.text,
+                    )
+                    original
+                } else {
+                    val reducedConfidence = (original.confidence * 0.3).coerceAtLeast(0.05)
+                    // Accelerate decay so contradicted propositions fade faster
+                    val acceleratedDecay = (original.decay + 0.15).coerceAtMost(1.0)
+                    logger.debug(
+                        "Contradicted: {} (conf: {}, decay: {}) vs new: {}",
+                        original.text, reducedConfidence, acceleratedDecay, newProposition.text
+                    )
+                    original
+                        .withConfidence(reducedConfidence)
+                        .withStatus(PropositionStatus.CONTRADICTED)
+                        .copy(decay = acceleratedDecay, lastAccessed = Instant.now())
+                }
                 // Contradicted is deliberately NOT trust-scored: it keeps its existing
                 // confidence-reduction trajectory. A wired detector refines only its classification.
                 val detector = conflictDetector

@@ -159,14 +159,17 @@ class DefaultCollectorRunnerTest {
     }
 
     @Test
-    fun `live run skips a pinned proposition`() {
+    fun `a live run leaves a pinned proposition untouched (decay-immune)`() {
         val pinned = decayedProp("pinned old fact", pinned = true)
         every { repository.query(any()) } returns listOf(pinned)
 
         val result = runner().run(contextId, dryRun = false)
 
+        // The decay strategy never marks a pinned proposition, so it isn't applied, skipped, or even
+        // marked — fully decay-immune — and nothing is written or emitted.
         assertTrue(result.applied.isEmpty())
-        assertTrue(result.skipped.isNotEmpty())
+        assertTrue(result.skipped.isEmpty())
+        assertTrue(result.marks.isEmpty())
         verify(exactly = 0) { repository.save(any()) }
         verify(exactly = 0) { repository.delete(any<String>()) }
         assertTrue(listener.eventsOfType<PropositionStatusChanged>().isEmpty())

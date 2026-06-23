@@ -77,6 +77,9 @@ data class PropositionQuery(
     // Trust filter (reads the cached trust score from proposition metadata)
     val minTrustScore: Double? = null,
 
+    // Pinned filter: true = only pinned, false = only unpinned, null = either
+    val pinned: Boolean? = null,
+
     // Ordering and limits
     val orderBy: OrderBy = OrderBy.NONE,
     val limit: Int? = null,
@@ -199,6 +202,9 @@ data class PropositionQuery(
     fun withMinReinforceCount(count: Int): PropositionQuery = copy(minReinforceCount = count)
 
     fun withMinTrustScore(threshold: Double): PropositionQuery = copy(minTrustScore = threshold)
+
+    /** Restrict to pinned (`true`) or unpinned (`false`) propositions. */
+    fun withPinned(pinned: Boolean = true): PropositionQuery = copy(pinned = pinned)
 
     fun withOrderBy(orderBy: OrderBy): PropositionQuery = copy(orderBy = orderBy)
 

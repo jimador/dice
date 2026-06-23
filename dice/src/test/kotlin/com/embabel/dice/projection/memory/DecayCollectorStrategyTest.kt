@@ -34,6 +34,7 @@ class DecayCollectorStrategyTest {
         text: String = "p",
         confidence: Double,
         decay: Double = 0.0,
+        pinned: Boolean = false,
     ): Proposition =
         Proposition(
             contextId = contextId,
@@ -41,7 +42,21 @@ class DecayCollectorStrategyTest {
             mentions = emptyList(),
             confidence = confidence,
             decay = decay,
+            pinned = pinned,
         )
+
+    @Test
+    fun `a pinned proposition below the threshold is decay-immune and not marked`() {
+        val pinnedLow = proposition("pinned-low", confidence = 0.1, pinned = true)
+        val unpinnedLow = proposition("low", confidence = 0.1)
+        val repository = mockk<PropositionRepository>(relaxed = true)
+
+        val marks = DecayCollectorStrategy(retireBelow = 0.5)
+            .mark(listOf(pinnedLow, unpinnedLow), repository, contextId)
+
+        assertEquals(1, marks.size)
+        assertEquals(unpinnedLow.id, marks[0].propositionId)
+    }
 
     @Test
     fun `marks candidates below the threshold with Stale and strategyName decay`() {
