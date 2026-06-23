@@ -266,4 +266,53 @@ class DreamLoopOrchestratorTest {
         assertEquals(1, after.runCount)
         assertFalse(report.passResults.none { it.passName == "after" })
     }
+
+    @Test
+    fun `concurrent cycles for the same context never overlap`() {
+        every { repository.query(any()) } returns listOf(proposition("p1"))
+        val active = java.util.concurrent.atomic.AtomicInteger(0)
+        val maxObserved = java.util.concurrent.atomic.AtomicInteger(0)
+        // A pass that widens the window where two cycles could overlap, recording the peak
+        // concurrency it ever observes. With the per-context lock, that peak must stay at 1.
+        val probe = object : ConsolidationPass {
+            override val name = "concurrency-probe"
+            override fun run(contextId: ContextId, propositions: List<Proposition>): ConsolidationPassResult {
+                val now = active.incrementAndGet()
+                maxObserved.updateAndGet { m -> maxOf(m, now) }
+                Thread.sleep(20)
+                active.decrementAndGet()
+                return ConsolidationPassResult.NoOp(name)
+            }
+        }
+        val orchestrator = DefaultDreamLoopOrchestrator.withRepository(repository).withPass(probe)
+
+        val threads = (1..8).map { Thread { orchestrator.consolidateNow(contextId) } }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        assertEquals(1, maxObserved.get(), "the per-context lock must serialize cycles for one context")
+    }
+
+    @Test
+    fun `cycles for different contexts are not serialized against each other`() {
+        every { repository.query(any()) } returns listOf(proposition("p1"))
+        // Both contexts must be inside the pass at the same time for the barrier to release. A
+        // global lock would block the second context and time the barrier out; per-context locks
+        // let both proceed, proving the locking is per context, not global.
+        val barrier = java.util.concurrent.CyclicBarrier(2)
+        val rendezvous = object : ConsolidationPass {
+            override val name = "rendezvous"
+            override fun run(contextId: ContextId, propositions: List<Proposition>): ConsolidationPassResult {
+                barrier.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                return ConsolidationPassResult.NoOp(name)
+            }
+        }
+        val orchestrator = DefaultDreamLoopOrchestrator.withRepository(repository).withPass(rendezvous)
+        val errors = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val a = Thread { runCatching { orchestrator.consolidateNow(ContextId("ctx-a")) }.onFailure { errors.add(it) } }
+        val b = Thread { runCatching { orchestrator.consolidateNow(ContextId("ctx-b")) }.onFailure { errors.add(it) } }
+        a.start(); b.start(); a.join(); b.join()
+
+        assertTrue(errors.isEmpty(), "different contexts must run concurrently, not block each other: $errors")
+    }
 }
