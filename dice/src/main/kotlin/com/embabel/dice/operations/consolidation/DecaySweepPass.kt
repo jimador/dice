@@ -87,6 +87,9 @@ class DecaySweepPass @JvmOverloads constructor(
                     propositionsToSave = emptyList(),
                     propositionsToDelete = emptyList(),
                     skipped = result.skipped.size,
+                    // The runner already wrote these transitions, so report them here rather than
+                    // in the save/delete lists — otherwise cycle totals would miss the decay sweep.
+                    externallyApplied = result.applied.size + result.hardDeleted.size,
                     summary = "decay sweep: ${result.applied.size} -> STALE, ${result.hardDeleted.size} hard-deleted",
                 )
             }

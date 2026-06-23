@@ -99,6 +99,7 @@ data class DefaultDreamLoopOrchestrator(
         val passResults = passes.map { pass -> runPass(pass, contextId, snapshot) }
 
         // (3) Aggregate saves into a single write.
+        val snapshotIds = snapshot.mapTo(HashSet()) { it.id }
         val changed = passResults.filterIsInstance<ConsolidationPassResult.Changed>()
         val toSave: List<Proposition> = changed.flatMap { it.propositionsToSave }
         if (toSave.isNotEmpty()) {
@@ -114,8 +115,14 @@ data class DefaultDreamLoopOrchestrator(
         lastActiveCount[contextId] = activeSnapshot(contextId).size
 
         // (6) Build the report.
-        val transitioned = changed.sumOf { it.propositionsToSave.size + it.propositionsToDelete.size }
-        val newPropositions = toSave.size
+        // A "new" proposition is one whose id was not in the examined snapshot (e.g. a fresh
+        // abstraction); a re-saved snapshot member (e.g. a source marked SUPERSEDED, or a
+        // CONTRADICTED loser) is a transition, not a new proposition. Decay transitions are written
+        // by their own pass, so they are counted via externallyApplied rather than the save list.
+        val newPropositions = toSave.count { it.id !in snapshotIds }
+        val savedTransitions = toSave.count { it.id in snapshotIds }
+        val transitioned = savedTransitions +
+            changed.sumOf { it.propositionsToDelete.size + it.externallyApplied }
         val report = DreamLoopReport(
             contextId = contextId,
             cycleStarted = cycleStarted,

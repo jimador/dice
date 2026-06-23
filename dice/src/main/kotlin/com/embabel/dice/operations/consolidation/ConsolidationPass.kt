@@ -74,6 +74,10 @@ sealed class ConsolidationPassResult {
      *   with `allowHardDelete`; otherwise ignored in favor of the soft-retire default, so a pass
      *   can always express a delete intent without risking data loss.
      * @property skipped Count of snapshot propositions the pass deliberately left untouched.
+     * @property externallyApplied Count of transitions the pass already wrote itself rather than
+     *   handing back via [propositionsToSave]/[propositionsToDelete]. Used by report-only passes
+     *   (e.g. the decay sweep, which writes through its own runner) so cycle totals still reflect
+     *   the work; zero for passes that return everything to the orchestrator.
      * @property summary Short description of what changed, for reports and logging.
      */
     data class Changed @JvmOverloads constructor(
@@ -81,6 +85,7 @@ sealed class ConsolidationPassResult {
         val propositionsToSave: List<Proposition> = emptyList(),
         val propositionsToDelete: List<String> = emptyList(),
         val skipped: Int = 0,
+        val externallyApplied: Int = 0,
         val summary: String = "",
     ) : ConsolidationPassResult()
 
