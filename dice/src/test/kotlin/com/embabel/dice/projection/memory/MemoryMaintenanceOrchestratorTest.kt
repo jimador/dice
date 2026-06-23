@@ -110,7 +110,7 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
-    inner class ConsolidationPhaseTests {
+    inner class ConsolidationStageTests {
 
         @Test
         fun `skips consolidation when no session propositions`() {
@@ -214,7 +214,7 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
-    inner class AbstractionPhaseTests {
+    inner class AbstractionStageTests {
 
         @Test
         fun `skips abstraction when no abstractor configured`() {
@@ -564,7 +564,7 @@ class MemoryMaintenanceOrchestratorTest {
 
             orchestrator.maintain(contextId)
 
-            // The abstraction phase query should filter to level 0
+            // The abstraction stage query should filter to level 0
             val queries = mutableListOf<PropositionQuery>()
             verify { repository.query(capture(queries)) }
             val abstractionQuery = queries.find { it.maxLevel == 0 }
@@ -574,7 +574,7 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
-    inner class RetirementPhaseTests {
+    inner class RetirementStageTests {
 
         @Test
         fun `skips retirement when retireBelow is null`() {
@@ -712,7 +712,7 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
-    inner class CollectorPhaseTests {
+    inner class CollectorStageTests {
 
         @Test
         fun `no collector configured yields null collectorResult`() {
@@ -730,7 +730,7 @@ class MemoryMaintenanceOrchestratorTest {
             val old = Instant.now().minus(365, ChronoUnit.DAYS)
             val decayed = proposition("old fact", confidence = 0.5, decay = 0.5, revised = old)
 
-            // Only the collector phase consumes candidates here: consolidation is skipped (no session),
+            // Only the collector stage consumes candidates here: consolidation is skipped (no session),
             // abstraction is skipped (no abstractor), and retirement is skipped (no retireBelow).
             every { repository.query(any()) } returns listOf(decayed)
             val saved = mutableListOf<Proposition>()
@@ -759,7 +759,7 @@ class MemoryMaintenanceOrchestratorTest {
     inner class FullPipelineTests {
 
         @Test
-        fun `runs all three phases in order`() {
+        fun `runs all three stages in order`() {
             val session = listOf(proposition("session fact"))
             val aliceProps = (1..5).map { proposition("alice fact $it", entityId = "alice") }
 
@@ -775,9 +775,9 @@ class MemoryMaintenanceOrchestratorTest {
             )
 
             // Repository returns different results per query context
-            // First call: consolidation phase (existing ACTIVE props)
-            // Second call: abstraction phase (level 0 ACTIVE props)
-            // Third call: retirement phase (ACTIVE props)
+            // First call: consolidation stage (existing ACTIVE props)
+            // Second call: abstraction stage (level 0 ACTIVE props)
+            // Third call: retirement stage (ACTIVE props)
             val queryResults = mutableListOf(
                 emptyList(),                    // consolidation: existing
                 aliceProps,                     // abstraction: level 0 active
@@ -807,7 +807,7 @@ class MemoryMaintenanceOrchestratorTest {
 
             val result = orchestrator.maintain(contextId, session)
 
-            // All phases ran
+            // All stages ran
             assertNotNull(result.consolidation)
             assertEquals(1, result.consolidation!!.promoted.size)
             assertEquals(1, result.abstractions.size)

@@ -57,7 +57,7 @@ import java.time.Instant
  * - [withRevision] — compare new propositions against existing ones
  * - [withMentionFilter] — drop low-quality entity mentions before resolution
  * - [withEventListener] — observe pipeline events
- * - [withExecutionStrategy] — control how the extraction phase is dispatched
+ * - [withExecutionStrategy] — control how the extraction stage is dispatched
  *
  * Example usage:
  * ```kotlin
@@ -157,11 +157,11 @@ class PropositionPipeline private constructor(
 
     /**
      * Set the [ExtractionExecutionStrategy] used to dispatch the stateless per-chunk
-     * extraction phase of [process].
+     * extraction stage of [process].
      *
-     * Defaults to [SerialExtractionStrategy] (zero behavior change vs. the pre-strategy
-     * pipeline). [ParallelExtractionStrategy] and [BatchedExtractionStrategy] only affect
-     * Phase 1 (extraction); the resolver-touching Phase 2 always stays serial, so
+     * Defaults to [SerialExtractionStrategy] (the fully sequential default).
+     *  [ParallelExtractionStrategy] and [BatchedExtractionStrategy] only affect
+     * the extraction stage; the resolver-touching resolution stage always stays serial, so
      * cross-chunk entity identity is preserved regardless of strategy.
      *
      * Enabling Parallel/Batched(`batchSize > 1`) in production is gated on verifying extractor
@@ -174,20 +174,20 @@ class PropositionPipeline private constructor(
         PropositionPipeline(extractor, reviser, propositionRepository, mentionFilter, rawEventListener, strategy)
 
     /**
-     * Carries the resolver-free output of Phase 1 for a single chunk so it can be produced
-     * concurrently. Phase 2 picks this up serially to do entity resolution. See [process].
+     * Carries the resolver-free output of the extraction stage for a single chunk so it can be produced
+     * concurrently. The resolution stage picks this up serially to do entity resolution. See [process].
      */
-    private data class ExtractionPhaseResult(
+    private data class ExtractionStageResult(
         val chunk: Chunk,
         val suggestedPropositions: SuggestedPropositions,
         val suggestedEntities: SuggestedEntities,
     )
 
     /**
-     * Phase 1 — extract propositions and convert mentions to suggested entities.
+     * Extraction stage — extract propositions and convert mentions to suggested entities.
      * Touches no entity resolver, so it is safe to run concurrently across chunks.
      */
-    private fun extractPhase(chunk: Chunk, context: SourceAnalysisContext): ExtractionPhaseResult {
+    private fun extractStage(chunk: Chunk, context: SourceAnalysisContext): ExtractionStageResult {
         logger.debug("Processing chunk: {}", chunk.id)
 
         // Step 1: Extract propositions from chunk
@@ -203,16 +203,16 @@ class PropositionPipeline private constructor(
         )
         logger.debug("Created {} suggested entities", suggestedEntities.suggestedEntities.size)
 
-        return ExtractionPhaseResult(chunk, suggestedPropositions, suggestedEntities)
+        return ExtractionStageResult(chunk, suggestedPropositions, suggestedEntities)
     }
 
     /**
-     * Phase 2 — resolve entities through the shared cross-chunk resolver, apply resolutions,
+     * Resolution stage — resolve entities through the shared cross-chunk resolver, apply resolutions,
      * and optionally revise against existing propositions. Must stay serial so all chunks share
      * the same entity identity within a single [process] run.
      */
-    private fun resolvePhase(
-        extraction: ExtractionPhaseResult,
+    private fun resolveStage(
+        extraction: ExtractionStageResult,
         context: SourceAnalysisContext,
     ): ChunkPropositionResult.Success {
         val (chunk, suggestedPropositions, suggestedEntities) = extraction
@@ -283,7 +283,7 @@ class PropositionPipeline private constructor(
      * [PersistablePropositions.persist][PersistablePropositions.persist] within its own
      * transaction scope; nothing is written to any repository otherwise.
      *
-     * Single-chunk semantics are unchanged: this runs Phase 1 then Phase 2 serially on the
+     * Single-chunk semantics are unchanged: this runs extraction then resolution serially on the
      * calling thread and propagates any extraction exception (it never produces a
      * [ChunkPropositionResult.Failed] — only the batch [process] does).
      *
@@ -295,7 +295,7 @@ class PropositionPipeline private constructor(
         chunk: Chunk,
         context: SourceAnalysisContext,
     ): ChunkPropositionResult =
-        resolvePhase(extractPhase(chunk, context), context)
+        resolveStage(extractStage(chunk, context), context)
 
     /**
      * Process a text once, with hash-based deduplication.
@@ -380,13 +380,13 @@ class PropositionPipeline private constructor(
         )
         val crossChunkContext = context.copy(entityResolver = crossChunkResolver)
 
-        // Phase 1 — resolver-free extraction, dispatched via the execution strategy (parallelizable).
+        // Extraction stage — resolver-free extraction, dispatched via the execution strategy (parallelizable).
         // A failed extraction yields a null slot; input order is preserved by the strategy.
-        // Capture the cause per chunk so we can produce a typed Failed result in Phase 2.
+        // Capture the cause per chunk so we can produce a typed Failed result in the resolution stage.
         val failures = HashMap<String, Throwable>()
-        val extractions: List<ExtractionPhaseResult?> =
+        val extractions: List<ExtractionStageResult?> =
             executionStrategy.execute(chunks) { chunk ->
-                runCatching { extractPhase(chunk, crossChunkContext) }
+                runCatching { extractStage(chunk, crossChunkContext) }
                     .getOrElse { e ->
                         logger.warn("Extraction failed for chunk {}: {}", chunk.id, e.message, e)
                         synchronized(failures) { failures[chunk.id] = e }
@@ -394,7 +394,7 @@ class PropositionPipeline private constructor(
                     }
             }
 
-        // Phase 2 — always serial, so all chunks share the same entity identity.
+        // Resolution stage — always serial, so all chunks share the same entity identity.
         // Resolve each non-null extraction through the shared crossChunkResolver; map null
         // slots to typed ChunkPropositionResult.Failed.
         val chunkResults: List<ChunkPropositionResult> = extractions.mapIndexed { i, extraction ->
@@ -402,7 +402,7 @@ class PropositionPipeline private constructor(
             if (extraction != null) {
                 // Isolate per-chunk: a throw in resolution, revision, or event emission surfaces
                 // as a Failed result for this chunk only, never aborting the whole run.
-                runCatching { resolvePhase(extraction, crossChunkContext) }
+                runCatching { resolveStage(extraction, crossChunkContext) }
                     .getOrElse { e ->
                         logger.warn("Resolution failed for chunk {}: {}", chunkId, e.message, e)
                         ChunkPropositionResult.failed(chunkId, e)

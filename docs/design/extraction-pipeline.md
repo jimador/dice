@@ -36,8 +36,8 @@ takes those candidates and decides *which real entities* they refer to, which me
 resolver that accumulates identity across the whole run.
 
 Keeping them as distinct stages is what makes safe concurrency possible at all. The extraction
-stage (`extractPhase`) touches no resolver and shares no state between chunks, so two chunks can be
-extracted at the same time without stepping on each other. The resolution stage (`resolvePhase`)
+stage (`extractStage`) touches no resolver and shares no state between chunks, so two chunks can be
+extracted at the same time without stepping on each other. The resolution stage (`resolveStage`)
 runs every chunk through one shared cross-chunk resolver so that "Brahms" mentioned in one chunk
 lands on the same entity as "Brahms" in another — and that shared, mutating identity map is exactly
 the thing you cannot touch from several threads at once. So the line between the two stages is also

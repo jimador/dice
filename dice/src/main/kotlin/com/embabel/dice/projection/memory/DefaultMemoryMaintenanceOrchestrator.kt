@@ -30,7 +30,7 @@ private val logger = LoggerFactory.getLogger("com.embabel.dice.projection.memory
 
 /**
  * Default [MemoryMaintenanceOrchestrator]: runs consolidation, abstraction, retirement, and
- * optionally the mark-and-sweep collector as a four-phase pipeline.
+ * optionally the mark-and-sweep collector as a four-stage pipeline.
  *
  * The consolidation and abstraction logic delegates to [SessionConsolidationPass] and
  * [AbstractionPass] respectively — they own the details of what changes. This orchestrator
@@ -52,7 +52,7 @@ private val logger = LoggerFactory.getLogger("com.embabel.dice.projection.memory
  * @param abstractionTargetCount How many abstractions to generate per group.
  * @param retireBelow Hard-delete propositions whose effective confidence falls below this; null disables retirement.
  * @param retireDecayK Decay-rate multiplier used when computing effective confidence for retirement.
- * @param collector Optional mark-and-sweep collector run as the final phase; null disables it.
+ * @param collector Optional mark-and-sweep collector run as the final stage; null disables it.
  */
 data class DefaultMemoryMaintenanceOrchestrator(
     private val repository: PropositionRepository,
@@ -69,17 +69,17 @@ data class DefaultMemoryMaintenanceOrchestrator(
         contextId: ContextId,
         sessionPropositions: List<Proposition>,
     ): MaintenanceResult {
-        // Phase 1: Consolidate session propositions (single source of truth: SessionConsolidationPass)
+        // Consolidate session propositions (single source of truth: SessionConsolidationPass)
         val consolidation = consolidate(contextId, sessionPropositions)
 
-        // Phase 2: Abstract entity groups (single source of truth: AbstractionPass)
+        // Abstract entity groups (single source of truth: AbstractionPass)
         val (abstractions, superseded) = abstract(contextId)
 
-        // Phase 3: Retire expired propositions (legacy hard delete; see class KDoc)
+        // Retire expired propositions (legacy hard delete; see class KDoc)
         val retired = retire(contextId)
 
-        // Phase 4 (optional): run the mark-and-sweep collector when one is configured.
-        // Default off; when null the behavior is identical to the three-phase pipeline.
+        // Optionally run the mark-and-sweep collector when one is configured.
+        // Default off; when null the behavior is identical to the three-stage pipeline.
         val collectorResult = collector?.run(contextId)
 
         logger.info(

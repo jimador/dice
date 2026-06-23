@@ -21,8 +21,8 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * Controls how the [PropositionPipeline] dispatches the stateless per-chunk extraction phase
- * (Phase 1). Implementations choose serial or concurrent execution; Phase 2 (entity resolution)
+ * Controls how the [PropositionPipeline] dispatches the stateless per-chunk extraction stage.
+ * Implementations choose serial or concurrent execution; the resolution stage (entity resolution)
  * always runs serially regardless of the strategy, preserving cross-chunk entity identity.
  *
  * ## Contract

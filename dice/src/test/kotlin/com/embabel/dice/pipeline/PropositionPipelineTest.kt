@@ -92,7 +92,7 @@ class PropositionPipelineTest {
 
         override fun extract(chunk: Chunk, context: SourceAnalysisContext): SuggestedPropositions {
             // Sentinel: a "fail:"-prefixed chunk simulates an extraction failure so the
-            // execution strategy's runCatching yields a null slot -> Phase 2 produces
+            // execution strategy's runCatching yields a null slot -> the resolution stage produces
             // ChunkPropositionResult.Failed.
             if (chunk.text.startsWith("fail:")) {
                 throw IllegalStateException("sentinel failure for ${chunk.id}")
@@ -1488,8 +1488,8 @@ class PropositionPipelineTest {
 
         @Test
         fun `a chunk that fails during resolution is isolated as Failed`() {
-            // Phase 1 (extraction) succeeds for every chunk; the resolver throws for chunk-2
-            // during Phase 2 resolution. The run must still produce one result per chunk with
+            // extraction succeeds for every chunk; the resolver throws for chunk-2
+            // during resolution. The run must still produce one result per chunk with
             // chunk-2 surfaced as Failed — not abort and discard the good chunks' results.
             val resolverThatThrowsOnBoom = object : EntityResolver {
                 override fun resolve(
@@ -1557,7 +1557,7 @@ class PropositionPipelineTest {
 
                 val result = newPipeline(strategy).process(chunks, context())
 
-                // 3 unique entities; Alice appears once in newEntities (resolved serially in Phase 2).
+                // 3 unique entities; Alice appears once in newEntities (resolved serially in the resolution stage).
                 val newEntities = result.newEntities()
                 assertEquals(3, newEntities.size, "Found: ${newEntities.map { it.name }}")
                 assertEquals(1, newEntities.count { it.name == "Alice" })

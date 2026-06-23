@@ -24,7 +24,7 @@ import com.embabel.dice.proposition.Proposition
  * weight propositions by how much they trust the source ([authorityTier]) and how
  * a clash with existing knowledge was classified ([conflictType]), without DICE
  * core hard-coding any particular trust model. The cached score is later consumed
- * by query filters and gates (a downstream phase).
+ * by query filters and gates (a downstream stage).
  *
  * The returned score is a value in `[0.0, 1.0]`, where `1.0` is fully trusted and
  * `0.0` is untrusted. Out-of-range scores from custom implementations are advisory
