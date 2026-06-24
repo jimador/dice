@@ -69,7 +69,7 @@ enum class PropositionStatus {
  * Each proposition should express a single fact with at most two entity mentions
  * (SUBJECT and OBJECT). This maps cleanly to graph relationships during promotion.
  * Complex sentences with multiple relationships should be extracted as multiple
- * propositions during the extraction phase.
+ * propositions during the extraction stage.
  *
  * @property id Unique identifier for this proposition
  * @property contextId The context in which this proposition is relevant

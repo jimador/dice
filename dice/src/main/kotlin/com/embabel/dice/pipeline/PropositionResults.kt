@@ -86,92 +86,150 @@ interface PropositionExtractionResult {
 }
 
 /**
- * Result of processing a single chunk through the proposition pipeline.
+ * The outcome of processing a single chunk through the proposition pipeline.
+ *
+ * A chunk either succeeds ([Success], with propositions and entity resolutions) or fails
+ * ([Failed], with a typed serializable error). Modelling failure inline preserves the
+ * `chunkResults.size == chunks.size` invariant — a failed chunk surfaces as a [Failed]
+ * slot rather than aborting the run or being silently dropped.
+ *
+ * All flat-access members ([propositions], [revisionResults], [persist], [newEntities], etc.)
+ * are available on this interface, so call sites work without smart-casting. The
+ * Success-only fields (`suggestedPropositions`, `entityResolutions`) live on [Success]
+ * and require a smart-cast to access.
  */
-data class ChunkPropositionResult(
-    val chunkId: String,
-    val suggestedPropositions: SuggestedPropositions,
-    val entityResolutions: Resolutions<SuggestedEntityResolution>,
-    override val propositions: List<Proposition>,
-    override val revisionResults: List<RevisionResult> = emptyList(),
-) : PersistablePropositions, HasInfoString {
+sealed interface ChunkPropositionResult : PersistablePropositions, HasInfoString {
 
-    override fun newEntities(): List<NamedEntityData> =
-        entityResolutions.resolutions
-            .filterIsInstance<NewEntity>()
-            .map { it.suggested.suggestedEntity }
-            .distinctBy { it.id }
+    /** Id of the chunk this result originated from. */
+    val chunkId: String
 
-    override fun updatedEntities(): List<NamedEntityData> =
-        entityResolutions.resolutions
-            .filterIsInstance<ExistingEntity>()
-            .map { it.recommended }
-            .distinctBy { it.id }
+    /**
+     * A chunk that was processed successfully.
+     */
+    data class Success(
+        override val chunkId: String,
+        val suggestedPropositions: SuggestedPropositions,
+        val entityResolutions: Resolutions<SuggestedEntityResolution>,
+        override val propositions: List<Proposition>,
+        override val revisionResults: List<RevisionResult> = emptyList(),
+    ) : ChunkPropositionResult {
 
-    override fun referenceOnlyEntities(): List<NamedEntityData> =
-        entityResolutions.resolutions
-            .filterIsInstance<ReferenceOnlyEntity>()
-            .map { it.existing }
-            .distinctBy { it.id }
+        override fun newEntities(): List<NamedEntityData> =
+            entityResolutions.resolutions
+                .filterIsInstance<NewEntity>()
+                .map { it.suggested.suggestedEntity }
+                .distinctBy { it.id }
 
-    override fun infoString(verbose: Boolean?, indent: Int): String {
-        val prefix = "  ".repeat(indent)
-        val stats = propositionExtractionStats
-        val newEntitiesCount = newEntities().size
-        val updatedEntitiesCount = updatedEntities().size
-        val referenceOnlyCount = referenceOnlyEntities().size
+        override fun updatedEntities(): List<NamedEntityData> =
+            entityResolutions.resolutions
+                .filterIsInstance<ExistingEntity>()
+                .map { it.recommended }
+                .distinctBy { it.id }
 
-        return buildString {
-            append("ChunkPropositionResult(chunk=$chunkId, ")
-            append("propositions=${propositions.size}, ")
-            append("entities: $newEntitiesCount new, $updatedEntitiesCount updated")
-            if (referenceOnlyCount > 0) {
-                append(", $referenceOnlyCount reference-only")
-            }
-            if (hasRevision) {
-                append(", revision: ")
-                append("${stats.newCount} new, ")
-                append("${stats.mergedCount} merged, ")
-                append("${stats.reinforcedCount} reinforced, ")
-                append("${stats.contradictedCount} contradicted, ")
-                append("${stats.generalizedCount} generalized")
-            }
-            append(")")
+        override fun referenceOnlyEntities(): List<NamedEntityData> =
+            entityResolutions.resolutions
+                .filterIsInstance<ReferenceOnlyEntity>()
+                .map { it.existing }
+                .distinctBy { it.id }
 
-            if (verbose == true) {
-                appendLine()
-                append("${prefix}Propositions:")
-                propositions.forEachIndexed { i, prop ->
-                    appendLine()
-                    val revisionInfo = if (hasRevision && i < revisionResults.size) {
-                        when (val result = revisionResults[i]) {
-                            is RevisionResult.New -> "[NEW]"
-                            is RevisionResult.Merged -> "[MERGED with ${result.original.id.take(8)}]"
-                            is RevisionResult.Reinforced -> "[REINFORCED ${result.original.id.take(8)}]"
-                            is RevisionResult.Contradicted -> "[CONTRADICTED ${result.original.id.take(8)}]"
-                            is RevisionResult.Generalized -> "[GENERALIZED ${result.generalizes.size} props]"
-                        }
-                    } else ""
-                    append("$prefix  • ${prop.text} (conf: ${String.format("%.2f", prop.confidence)}) $revisionInfo")
+        override fun infoString(verbose: Boolean?, indent: Int): String {
+            val prefix = "  ".repeat(indent)
+            val stats = propositionExtractionStats
+            val newEntitiesCount = newEntities().size
+            val updatedEntitiesCount = updatedEntities().size
+            val referenceOnlyCount = referenceOnlyEntities().size
+
+            return buildString {
+                append("ChunkPropositionResult(chunk=$chunkId, ")
+                append("propositions=${propositions.size}, ")
+                append("entities: $newEntitiesCount new, $updatedEntitiesCount updated")
+                if (referenceOnlyCount > 0) {
+                    append(", $referenceOnlyCount reference-only")
                 }
-                if (newEntitiesCount > 0 || updatedEntitiesCount > 0 || referenceOnlyCount > 0) {
+                if (hasRevision) {
+                    append(", revision: ")
+                    append("${stats.newCount} new, ")
+                    append("${stats.mergedCount} merged, ")
+                    append("${stats.reinforcedCount} reinforced, ")
+                    append("${stats.contradictedCount} contradicted, ")
+                    append("${stats.generalizedCount} generalized")
+                }
+                append(")")
+
+                if (verbose == true) {
                     appendLine()
-                    append("${prefix}Entities:")
-                    newEntities().forEach { entity ->
+                    append("${prefix}Propositions:")
+                    propositions.forEachIndexed { i, prop ->
                         appendLine()
-                        append("$prefix  • [NEW] ${entity.name} (${entity.labels().joinToString()})")
+                        val revisionInfo = if (hasRevision && i < revisionResults.size) {
+                            when (val result = revisionResults[i]) {
+                                is RevisionResult.New -> "[NEW]"
+                                is RevisionResult.Merged -> "[MERGED with ${result.original.id.take(8)}]"
+                                is RevisionResult.Reinforced -> "[REINFORCED ${result.original.id.take(8)}]"
+                                is RevisionResult.Contradicted -> "[CONTRADICTED ${result.original.id.take(8)}]"
+                                is RevisionResult.Generalized -> "[GENERALIZED ${result.generalizes.size} props]"
+                            }
+                        } else ""
+                        append("$prefix  • ${prop.text} (conf: ${String.format("%.2f", prop.confidence)}) $revisionInfo")
                     }
-                    updatedEntities().forEach { entity ->
+                    if (newEntitiesCount > 0 || updatedEntitiesCount > 0 || referenceOnlyCount > 0) {
                         appendLine()
-                        append("$prefix  • [UPDATED] ${entity.name} (${entity.labels().joinToString()})")
-                    }
-                    referenceOnlyEntities().forEach { entity ->
-                        appendLine()
-                        append("$prefix  • [REF-ONLY] ${entity.name} (${entity.labels().joinToString()})")
+                        append("${prefix}Entities:")
+                        newEntities().forEach { entity ->
+                            appendLine()
+                            append("$prefix  • [NEW] ${entity.name} (${entity.labels().joinToString()})")
+                        }
+                        updatedEntities().forEach { entity ->
+                            appendLine()
+                            append("$prefix  • [UPDATED] ${entity.name} (${entity.labels().joinToString()})")
+                        }
+                        referenceOnlyEntities().forEach { entity ->
+                            appendLine()
+                            append("$prefix  • [REF-ONLY] ${entity.name} (${entity.labels().joinToString()})")
+                        }
                     }
                 }
             }
         }
+    }
+
+    /**
+     * A chunk that failed to process. Carries the [chunkId], a serialization-friendly [error]
+     * message, and the optional raw [cause] for in-process inspection. Contributes nothing
+     * to any proposition or entity aggregate.
+     */
+    data class Failed(
+        override val chunkId: String,
+        val error: String,
+        val cause: Throwable? = null,
+    ) : ChunkPropositionResult {
+
+        override val propositions: List<Proposition> get() = emptyList()
+        override val revisionResults: List<RevisionResult> get() = emptyList()
+
+        override fun newEntities(): List<NamedEntityData> = emptyList()
+        override fun updatedEntities(): List<NamedEntityData> = emptyList()
+        override fun referenceOnlyEntities(): List<NamedEntityData> = emptyList()
+
+        override fun infoString(verbose: Boolean?, indent: Int): String =
+            "Failed(chunk=$chunkId: $error)"
+    }
+
+    companion object {
+        /** Construct a [Success] result. Java/test-friendly factory. */
+        @JvmStatic
+        fun success(
+            chunkId: String,
+            suggestedPropositions: SuggestedPropositions,
+            entityResolutions: Resolutions<SuggestedEntityResolution>,
+            propositions: List<Proposition>,
+            revisionResults: List<RevisionResult> = emptyList(),
+        ): Success = Success(chunkId, suggestedPropositions, entityResolutions, propositions, revisionResults)
+
+        /** Construct a [Failed] result from a [Throwable]. Java/test-friendly factory. */
+        @JvmStatic
+        fun failed(chunkId: String, cause: Throwable): Failed =
+            Failed(chunkId, cause.message ?: cause.toString(), cause)
     }
 }
 
@@ -196,6 +254,10 @@ data class PropositionResults(
 
     /** All revision results across all chunks */
     override val revisionResults: List<RevisionResult> get() = chunkResults.flatMap { it.revisionResults }
+
+    /** Chunk ids of all chunks that failed to process. */
+    val failedChunkIds: List<String>
+        get() = chunkResults.filterIsInstance<ChunkPropositionResult.Failed>().map { it.chunkId }
 
     override fun newEntities(): List<NamedEntityData> =
         chunkResults.flatMap { it.newEntities() }.distinctBy { it.id }

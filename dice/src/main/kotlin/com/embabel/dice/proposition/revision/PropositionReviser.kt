@@ -67,7 +67,11 @@ sealed class RevisionResult {
         val revised: Proposition,
     ) : RevisionResult()
 
-    /** Contradicted an existing proposition (both stored, old with reduced confidence) */
+    /**
+     * Contradicted an existing proposition. Both are stored; the [original] normally has its
+     * confidence reduced and status set to CONTRADICTED — except a pinned original is kept intact
+     * (conflict-protected), leaving the clash for explicit resolution.
+     */
     data class Contradicted(
         val original: Proposition,
         val new: Proposition,

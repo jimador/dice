@@ -91,6 +91,23 @@ flowchart TB
     style Projections fill:#d4f5d4,stroke:#3fd73c,color:#1e1e1e
 ```
 
+### Design notes
+
+For the reasoning behind how DICE behaves — the conceptual model and the decisions you can't
+recover by reading a single class — see the design notes in [`docs/design/`](docs/design/):
+
+- [Extraction pipeline](docs/design/extraction-pipeline.md) — the two-stage extract/resolve flow,
+  optional concurrency, and why the pipeline returns unsaved results for the caller to persist.
+- [Proposition lifecycle](docs/design/proposition-lifecycle.md) — trust scoring, source authority,
+  conflict classification, supersession versus contradiction, and decay instead of deletion.
+- [Knowledge hygiene](docs/design/knowledge-hygiene.md) — admission gates, mark-and-sweep
+  reclamation, and the consolidation dream loop (the "why" overview of the three interventions).
+- [Consolidation and the dream loop](docs/design/consolidation-and-dream-loop.md) — the pass
+  abstraction, the four consolidation passes, and how a cycle composes and is triggered.
+- [Reclamation and the collector](docs/design/reclamation-and-collector.md) — the mark-and-sweep
+  internals: strategies, sweep policy, dry-run vs. live, and the audit trail.
+- [Events](docs/design/events.md) — the domain-event model the store and pipeline emit.
+
 ## Real-World Example: Impromptu
 
 **[Impromptu](https://github.com/embabel/impromptu)** is a classical music exploration chatbot that uses DICE

@@ -22,16 +22,18 @@ import com.embabel.dice.proposition.PropositionRepository
 /**
  * Result of a memory maintenance run.
  *
- * @property consolidation Result from the consolidation phase, null if no session propositions were provided
+ * @property consolidation Result from the consolidation stage, null if no session propositions were provided
  * @property abstractions New abstract propositions generated from entity groups
  * @property superseded Source propositions that were marked SUPERSEDED after abstraction
  * @property retired Propositions that were deleted because their effective confidence fell below the threshold
+ * @property collectorResult Result of the optional collector stage, or null when no collector was configured
  */
 data class MaintenanceResult(
     val consolidation: ConsolidationResult?,
     val abstractions: List<Proposition>,
     val superseded: List<Proposition>,
     val retired: List<Proposition>,
+    val collectorResult: CollectorRunResult? = null,
 ) {
     /** Total number of propositions persisted (promoted + reinforced + merged + abstractions + superseded status changes) */
     val totalPersisted: Int
@@ -46,7 +48,7 @@ data class MaintenanceResult(
  * Orchestrates memory maintenance — consolidating, abstracting, retiring, and persisting —
  * as a single entry point suitable for end-of-session or scheduled batch runs.
  *
- * Three-phase pipeline:
+ * Three-stage pipeline:
  * 1. **Consolidate** — Promote/reinforce/merge/discard session propositions against existing long-term memories.
  * 2. **Abstract** — Synthesize higher-level insights from groups of related propositions (grouped by entity).
  * 3. **Retire expired** — Delete ACTIVE propositions whose effective confidence has fallen below a threshold.
@@ -69,7 +71,7 @@ data class MaintenanceResult(
 interface MemoryMaintenanceOrchestrator {
 
     /**
-     * Run all maintenance phases for the given context.
+     * Run all maintenance stages for the given context.
      *
      * @param contextId The context to maintain
      * @param sessionPropositions Propositions from the current session to consolidate; empty for scheduled maintenance
@@ -81,7 +83,7 @@ interface MemoryMaintenanceOrchestrator {
     ): MaintenanceResult
 
     /**
-     * Builder intermediate: requires a consolidator before producing the orchestrator.
+     * Intermediate builder step — call [withConsolidator] to get a usable orchestrator.
      */
     class NeedsConsolidator internal constructor(
         private val repository: PropositionRepository,
@@ -95,7 +97,7 @@ interface MemoryMaintenanceOrchestrator {
 
     companion object {
         /**
-         * Start building a MemoryMaintenanceOrchestrator with the given repository.
+         * Start building a [MemoryMaintenanceOrchestrator] backed by the given repository.
          */
         @JvmStatic
         fun withRepository(repository: PropositionRepository): NeedsConsolidator =

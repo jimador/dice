@@ -56,6 +56,7 @@ class MemoryMaintenanceOrchestratorTest {
             status = status,
             created = created,
             contentRevised = revised,
+            metadataRevised = revised,
         )
     }
 
@@ -109,7 +110,7 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
-    inner class ConsolidationPhaseTests {
+    inner class ConsolidationStageTests {
 
         @Test
         fun `skips consolidation when no session propositions`() {
@@ -213,7 +214,7 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
-    inner class AbstractionPhaseTests {
+    inner class AbstractionStageTests {
 
         @Test
         fun `skips abstraction when no abstractor configured`() {
@@ -301,6 +302,49 @@ class MemoryMaintenanceOrchestratorTest {
         }
 
         @Test
+        fun `superseding source propositions preserves their decay clock`() {
+            // contentRevised is the decay anchor. An administrative status change to
+            // SUPERSEDED must NOT reset it, otherwise superseded facts spuriously
+            // regain effective confidence.
+            val anchored = Instant.now().minus(30, ChronoUnit.DAYS)
+            val props = (1..5).map {
+                proposition("fact $it", entityId = "alice", revised = anchored)
+            }
+
+            every { repository.query(any()) } returns props
+            every { abstractor.abstract(any<com.embabel.dice.operations.PropositionGroup>(), any()) } returns listOf(
+                Proposition(
+                    contextId = contextId,
+                    text = "abstraction",
+                    mentions = emptyList(),
+                    confidence = 0.9,
+                    level = 1,
+                    sourceIds = props.map { it.id },
+                )
+            )
+
+            val orchestrator = MemoryMaintenanceOrchestrator
+                .withRepository(repository)
+                .withConsolidator(consolidator)
+                .withAbstractor(abstractor)
+                .withAbstractionThreshold(5)
+
+            val result = orchestrator.maintain(contextId)
+
+            assertEquals(5, result.superseded.size)
+            assertTrue(result.superseded.all { it.status == PropositionStatus.SUPERSEDED })
+            // Decay anchor preserved across the supersede; only metadata advances.
+            assertTrue(
+                result.superseded.all { it.contentRevised == anchored },
+                "supersede must preserve contentRevised (decay clock)",
+            )
+            assertTrue(
+                result.superseded.all { it.metadataRevised.isAfter(anchored) },
+                "supersede is an administrative touch that advances metadataRevised",
+            )
+        }
+
+        @Test
         fun `persists abstractions and superseded propositions`() {
             val props = (1..5).map { proposition("fact $it", entityId = "alice") }
             val abstraction = Proposition(
@@ -380,6 +424,133 @@ class MemoryMaintenanceOrchestratorTest {
         }
 
         @Test
+        fun `persists high-level abstractions without a level cap`() {
+            // Pre-refactor maintain() applied NO level ceiling: any abstraction the abstractor
+            // returns is persisted, including level >= 2. Guards against re-introducing a maxLevel
+            // cap into the legacy path (which would silently drop higher-level abstractions).
+            val props = (1..5).map { proposition("fact $it about alice", entityId = "alice") }
+            val level2 = Proposition(
+                contextId = contextId,
+                text = "level-2 alice abstraction",
+                mentions = emptyList(),
+                confidence = 0.9,
+                level = 2,
+                sourceIds = props.map { it.id },
+            )
+
+            every { repository.query(any()) } returns props
+            every { abstractor.abstract(any<com.embabel.dice.operations.PropositionGroup>(), any()) } returns listOf(level2)
+
+            val orchestrator = MemoryMaintenanceOrchestrator
+                .withRepository(repository)
+                .withConsolidator(consolidator)
+                .withAbstractor(abstractor)
+                .withAbstractionThreshold(5)
+
+            val result = orchestrator.maintain(contextId)
+
+            assertEquals(1, result.abstractions.size)
+            assertEquals(2, result.abstractions[0].level)
+            verify { repository.saveAll(listOf(level2)) }
+        }
+
+        @Test
+        fun `persists level 4 abstractions without dropping them`() {
+            // A level-4 abstraction sits above any plausible default ceiling. maintain() must still
+            // persist it, proving no cap is silently applied on the legacy path.
+            val props = (1..5).map { proposition("fact $it about alice", entityId = "alice") }
+            val level4 = Proposition(
+                contextId = contextId,
+                text = "level-4 alice abstraction",
+                mentions = emptyList(),
+                confidence = 0.95,
+                level = 4,
+                sourceIds = props.map { it.id },
+            )
+
+            every { repository.query(any()) } returns props
+            every { abstractor.abstract(any<com.embabel.dice.operations.PropositionGroup>(), any()) } returns listOf(level4)
+
+            val orchestrator = MemoryMaintenanceOrchestrator
+                .withRepository(repository)
+                .withConsolidator(consolidator)
+                .withAbstractor(abstractor)
+                .withAbstractionThreshold(5)
+
+            val result = orchestrator.maintain(contextId)
+
+            assertEquals(1, result.abstractions.size)
+            assertEquals(4, result.abstractions[0].level)
+            verify { repository.saveAll(listOf(level4)) }
+        }
+
+        @Test
+        fun `abstraction spanning multiple entity groups is saved and counted exactly once`() {
+            // A single source proposition mentioning two entities belongs to BOTH entity groups.
+            // Its abstraction must be saved and counted exactly once — not double-saved/double-counted
+            // by a cross-group sourceId re-split, and not conflated with a structurally-equal sibling
+            // from the other group. Each group is abstracted in isolation, so each group's abstract()
+            // call returns that group's own (distinct-instance) abstraction.
+            val shared = Proposition(
+                contextId = contextId,
+                text = "shared fact mentioning alice and bob",
+                mentions = listOf(
+                    EntityMention(span = "alice", type = "Entity", resolvedId = "alice"),
+                    EntityMention(span = "bob", type = "Entity", resolvedId = "bob"),
+                ),
+                confidence = 0.8,
+            )
+            val aliceOnly = (1..4).map { proposition("alice fact $it", entityId = "alice") }
+            val bobOnly = (1..4).map { proposition("bob fact $it", entityId = "bob") }
+            val snapshot = listOf(shared) + aliceOnly + bobOnly
+
+            every { repository.query(any()) } returns snapshot
+            // Each group's abstract() call returns its own abstraction referencing the shared source.
+            val aliceAbstraction = Proposition(
+                contextId = contextId,
+                text = "alice group abstraction",
+                mentions = emptyList(),
+                confidence = 0.9,
+                level = 1,
+                sourceIds = listOf(shared.id),
+            )
+            val bobAbstraction = Proposition(
+                contextId = contextId,
+                text = "bob group abstraction",
+                mentions = emptyList(),
+                confidence = 0.9,
+                level = 1,
+                sourceIds = listOf(shared.id),
+            )
+            every {
+                abstractor.abstract(match<com.embabel.dice.operations.PropositionGroup> { it.label == "alice" }, any())
+            } returns listOf(aliceAbstraction)
+            every {
+                abstractor.abstract(match<com.embabel.dice.operations.PropositionGroup> { it.label == "bob" }, any())
+            } returns listOf(bobAbstraction)
+
+            val orchestrator = MemoryMaintenanceOrchestrator
+                .withRepository(repository)
+                .withConsolidator(consolidator)
+                .withAbstractor(abstractor)
+                .withAbstractionThreshold(5)
+
+            val result = orchestrator.maintain(contextId)
+
+            // Exactly two abstractions — alice's and bob's — each present once. The pre-refactor
+            // cross-group sourceId re-split would have matched BOTH abstractions to BOTH groups
+            // (their sourceIds reference the shared source, which is in each group's member set) and
+            // saved/counted each one twice, inflating this to 4. Per-group isolation keeps it at 2.
+            assertEquals(2, result.abstractions.size)
+            assertTrue(result.abstractions.any { it.text == "alice group abstraction" })
+            assertTrue(result.abstractions.any { it.text == "bob group abstraction" })
+            // Each abstraction appears exactly once (no duplicate-save of the same instance).
+            assertEquals(result.abstractions.size, result.abstractions.distinct().size)
+            verify(exactly = 1) { repository.saveAll(listOf(aliceAbstraction)) }
+            verify(exactly = 1) { repository.saveAll(listOf(bobAbstraction)) }
+        }
+
+        @Test
         fun `only groups level 0 propositions for abstraction`() {
             // The query uses withMaxLevel(0), so higher-level propositions should be excluded
             // by the repository query. We verify the query is correct.
@@ -393,7 +564,7 @@ class MemoryMaintenanceOrchestratorTest {
 
             orchestrator.maintain(contextId)
 
-            // The abstraction phase query should filter to level 0
+            // The abstraction stage query should filter to level 0
             val queries = mutableListOf<PropositionQuery>()
             verify { repository.query(capture(queries)) }
             val abstractionQuery = queries.find { it.maxLevel == 0 }
@@ -403,7 +574,7 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
-    inner class RetirementPhaseTests {
+    inner class RetirementStageTests {
 
         @Test
         fun `skips retirement when retireBelow is null`() {
@@ -541,10 +712,54 @@ class MemoryMaintenanceOrchestratorTest {
     }
 
     @Nested
+    inner class CollectorStageTests {
+
+        @Test
+        fun `no collector configured yields null collectorResult`() {
+            val orchestrator = MemoryMaintenanceOrchestrator
+                .withRepository(repository)
+                .withConsolidator(consolidator)
+
+            val result = orchestrator.maintain(contextId)
+
+            assertNull(result.collectorResult)
+        }
+
+        @Test
+        fun `withCollector runs the collector and transitions decayed active propositions to STALE`() {
+            val old = Instant.now().minus(365, ChronoUnit.DAYS)
+            val decayed = proposition("old fact", confidence = 0.5, decay = 0.5, revised = old)
+
+            // Only the collector stage consumes candidates here: consolidation is skipped (no session),
+            // abstraction is skipped (no abstractor), and retirement is skipped (no retireBelow).
+            every { repository.query(any()) } returns listOf(decayed)
+            val saved = mutableListOf<Proposition>()
+            every { repository.save(capture(saved)) } answers { saved.last() }
+
+            val collector = CollectorRunner
+                .withRepository(repository)
+                .withStrategy(DecayCollectorStrategy(retireBelow = 0.3))
+                .build()
+
+            val orchestrator = MemoryMaintenanceOrchestrator
+                .withRepository(repository)
+                .withConsolidator(consolidator)
+                .withCollector(collector)
+
+            val result = orchestrator.maintain(contextId)
+
+            assertNotNull(result.collectorResult)
+            assertEquals(1, result.collectorResult!!.applied.size)
+            assertEquals(decayed.id, result.collectorResult!!.applied.first().propositionId)
+            assertTrue(saved.any { it.id == decayed.id && it.status == PropositionStatus.STALE })
+        }
+    }
+
+    @Nested
     inner class FullPipelineTests {
 
         @Test
-        fun `runs all three phases in order`() {
+        fun `runs all three stages in order`() {
             val session = listOf(proposition("session fact"))
             val aliceProps = (1..5).map { proposition("alice fact $it", entityId = "alice") }
 
@@ -560,9 +775,9 @@ class MemoryMaintenanceOrchestratorTest {
             )
 
             // Repository returns different results per query context
-            // First call: consolidation phase (existing ACTIVE props)
-            // Second call: abstraction phase (level 0 ACTIVE props)
-            // Third call: retirement phase (ACTIVE props)
+            // First call: consolidation stage (existing ACTIVE props)
+            // Second call: abstraction stage (level 0 ACTIVE props)
+            // Third call: retirement stage (ACTIVE props)
             val queryResults = mutableListOf(
                 emptyList(),                    // consolidation: existing
                 aliceProps,                     // abstraction: level 0 active
@@ -592,7 +807,7 @@ class MemoryMaintenanceOrchestratorTest {
 
             val result = orchestrator.maintain(contextId, session)
 
-            // All phases ran
+            // All stages ran
             assertNotNull(result.consolidation)
             assertEquals(1, result.consolidation!!.promoted.size)
             assertEquals(1, result.abstractions.size)

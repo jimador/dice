@@ -33,6 +33,9 @@ import com.embabel.dice.pipeline.ChunkPropositionResult
 import com.embabel.dice.pipeline.PropositionPipeline
 import com.embabel.dice.proposition.PropositionRepository
 import com.embabel.dice.proposition.revision.RevisionResult
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import org.slf4j.LoggerFactory
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.http.MediaType
@@ -41,8 +44,16 @@ import org.springframework.web.bind.annotation.*
 import org.springframework.web.multipart.MultipartFile
 
 /**
- * REST controller for proposition extraction pipeline operations.
- * Handles text processing and proposition extraction.
+ * REST controller that runs the proposition extraction pipeline over text or uploaded files.
+ *
+ * Exposes two endpoints under `/api/v1/contexts/{contextId}`:
+ * - `POST /extract` — send raw text, get back propositions and entity resolutions
+ * - `POST /extract/file` — upload a document (PDF, Word, Markdown, HTML, etc.) and get back
+ *   per-chunk results aggregated into a single summary
+ *
+ * Not component-scanned: activate via [DiceRestConfiguration]. Requires a [PropositionPipeline]
+ * bean to be present. The context id comes exclusively from the path variable; it is never read
+ * from the request body.
  */
 @RestController
 @RequestMapping("/api/v1/contexts/{contextId}")
@@ -57,12 +68,16 @@ class PropositionPipelineController(
         config = ContentChunker.Config(),
         chunkTransformer = ChunkTransformer.NO_OP,
     ),
+    private val objectMapper: ObjectMapper = jacksonObjectMapper(),
 ) {
 
     private val logger = LoggerFactory.getLogger(PropositionPipelineController::class.java)
 
     /**
-     * Extract propositions from text chunk.
+     * Extract propositions from a single text chunk.
+     *
+     * Runs the extraction pipeline on the supplied text, persists the resulting propositions,
+     * and returns them together with entity resolution and revision summaries.
      */
     @PostMapping("/extract")
     fun extract(
@@ -70,6 +85,11 @@ class PropositionPipelineController(
         @RequestBody request: ExtractRequest,
     ): ResponseEntity<ExtractResponse> {
         logger.info("Extracting propositions for context: {}", contextId)
+
+        if (request.text.isBlank()) {
+            logger.warn("Rejecting extract request for context {}: blank text", contextId)
+            return ResponseEntity.badRequest().build()
+        }
 
         val chunk = Chunk.create(
             text = request.text,
@@ -79,8 +99,9 @@ class PropositionPipelineController(
         val context = buildContext(contextId, request.knownEntities, request.schemaName)
         val result = propositionPipeline.processChunk(chunk, context)
 
-        // Save propositions
-        result.propositions.forEach { proposition ->
+        // Persist what revision says to keep — both the freshly extracted propositions and any
+        // revised originals (e.g. an existing proposition retired to CONTRADICTED), not just the new ones.
+        result.propositionsToPersist().forEach { proposition ->
             propositionRepository.save(proposition)
         }
 
@@ -88,8 +109,11 @@ class PropositionPipelineController(
     }
 
     /**
-     * Extract propositions from an uploaded file.
-     * Supports PDF, Word, Markdown, HTML, and other formats via Apache Tika.
+     * Extract propositions from an uploaded document.
+     *
+     * Parses the file with Apache Tika (PDF, Word, Markdown, HTML, and more), chunks it, runs
+     * each chunk through the extraction pipeline, persists the propositions, and returns an
+     * aggregated summary across all chunks.
      */
     @PostMapping("/extract/file", consumes = [MediaType.MULTIPART_FORM_DATA_VALUE])
     fun extractFromFile(
@@ -126,23 +150,30 @@ class PropositionPipelineController(
             ))
         }
 
-        // Process each chunk through the pipeline
-        val context = buildContext(contextId, emptyList(), schemaName)
-        val chunkResults = chunks.map { chunk ->
-            val result = propositionPipeline.processChunk(chunk, context)
+        // Process all chunks through the pipeline's batch entry point. process() isolates a failing
+        // chunk into a typed Failed result (so one bad chunk yields partial results instead of 500ing
+        // the whole upload), shares entity identity across chunks, and is the only path that honors
+        // the configured extraction execution strategy (Serial/Parallel/Batched). processChunk(), by
+        // contrast, propagates failures and runs one chunk in isolation.
+        val context = buildContext(contextId, parseKnownEntities(knownEntitiesJson), schemaName)
+        val processResult = propositionPipeline.process(chunks, context)
+        val chunkResults = processResult.chunkResults
 
-            // Save propositions
-            result.propositions.forEach { proposition ->
-                propositionRepository.save(proposition)
-            }
-
-            result
+        // Persist what revision says to keep across the whole batch — revised originals (e.g. a
+        // CONTRADICTED original) as well as the new propositions, not just the new ones.
+        processResult.propositionsToPersist().forEach { proposition ->
+            propositionRepository.save(proposition)
         }
 
         // Aggregate results
         val allPropositions = chunkResults.flatMap { it.propositions }
         val allRevisions = chunkResults.flatMap { it.revisionResults }
-        val allResolutions = chunkResults.flatMap { it.entityResolutions.resolutions }
+        // Failed chunks contribute zero resolutions to the aggregate response:
+        // entityResolutions is a Success-only field, and Failed returns empty propositions/
+        // revisionResults via the interface, so the flat-maps above already exclude them.
+        val allResolutions = chunkResults
+            .filterIsInstance<ChunkPropositionResult.Success>()
+            .flatMap { it.entityResolutions.resolutions }
 
         val resolvedIds = allResolutions.mapNotNull { resolution ->
             when (resolution) {
@@ -186,7 +217,7 @@ class PropositionPipelineController(
             entities = EntitySummary(
                 created = createdIds,
                 resolved = resolvedIds,
-                failed = emptyList(),
+                failed = chunkResults.filterIsInstance<ChunkPropositionResult.Failed>().map { it.chunkId },
             ),
             revision = revisionSummary,
         )
@@ -198,6 +229,14 @@ class PropositionPipelineController(
 
         return ResponseEntity.ok(response)
     }
+
+    /**
+     * Parse the optional `knownEntities` multipart part — a JSON array of [KnownEntityDto] — into a
+     * list. A blank or absent part yields an empty list. This mirrors the JSON `/extract` endpoint,
+     * which binds `knownEntities` directly from the request body.
+     */
+    private fun parseKnownEntities(json: String?): List<KnownEntityDto> =
+        if (json.isNullOrBlank()) emptyList() else objectMapper.readValue(json)
 
     private fun buildContext(
         contextId: String,
@@ -230,6 +269,21 @@ class PropositionPipelineController(
         contextId: String,
         result: ChunkPropositionResult,
     ): ExtractResponse {
+        // entityResolutions is a Success-only field; a Failed chunk yields an empty response
+        // carrying the failed chunkId.
+        if (result !is ChunkPropositionResult.Success) {
+            return ExtractResponse(
+                chunkId = chunkId,
+                contextId = contextId,
+                propositions = emptyList(),
+                entities = EntitySummary(
+                    created = emptyList(),
+                    resolved = emptyList(),
+                    failed = listOf(result.chunkId),
+                ),
+                revision = null,
+            )
+        }
         val resolvedIds = result.entityResolutions.resolutions
             .mapNotNull { resolution ->
                 when (resolution) {

@@ -16,10 +16,12 @@
 package com.embabel.dice.common
 
 /**
- * A reusable collection of relation types with builder-style methods.
- * Can be shared across multiple SourceAnalysisContext instances.
+ * A reusable, immutable collection of [Relation] types with a fluent builder API.
  *
- * Usage:
+ * Build one up with `withSemantic`, `withProcedural`, etc., then pass it to a
+ * `SourceAnalysisContext` via `withRelations`. The same instance can be shared
+ * across multiple contexts.
+ *
  * ```kotlin
  * val relations = Relations.empty()
  *     .withSemantic("works at", "is employed by")
@@ -32,92 +34,66 @@ package com.embabel.dice.common
  *     .withRelations(relations)
  * ```
  *
- * @property relations The list of relation types
+ * @property relations The relation types in this collection.
  */
 data class Relations(
     val relations: List<Relation> = emptyList(),
 ) : Iterable<Relation> {
 
     companion object {
-        /**
-         * Create an empty Relations collection.
-         */
+        /** Start with an empty collection and build up with `with*` calls. */
         @JvmStatic
         fun empty(): Relations = Relations()
 
-        /**
-         * Create a Relations collection from existing relations.
-         */
+        /** Wrap an existing vararg of relations. */
         @JvmStatic
         fun of(vararg relations: Relation): Relations = Relations(relations.toList())
 
-        /**
-         * Create a Relations collection from a list of relations.
-         */
+        /** Wrap an existing list of relations. */
         @JvmStatic
         fun of(relations: List<Relation>): Relations = Relations(relations)
     }
 
     override fun iterator(): Iterator<Relation> = relations.iterator()
 
-    /**
-     * Returns the number of relations in this collection.
-     */
+    /** Number of relations in this collection. */
     fun size(): Int = relations.size
 
-    /**
-     * Returns true if this collection is empty.
-     */
+    /** True if this collection has no relations. */
     fun isEmpty(): Boolean = relations.isEmpty()
 
-    /**
-     * Combines this collection with another.
-     */
+    /** Returns a new collection containing the relations from both. */
     operator fun plus(other: Relations): Relations =
         Relations(relations + other.relations)
 
-    /**
-     * Adds a single relation.
-     */
+    /** Returns a new collection with the given relation appended. */
     operator fun plus(relation: Relation): Relations =
         Relations(relations + relation)
 
-    /**
-     * Add a semantic (factual) relation.
-     */
+    /** Add a semantic (factual) relation. */
     @JvmOverloads
     fun withSemantic(predicate: String, meaning: String = predicate): Relations =
         this + Relation.semantic(predicate, meaning)
 
-    /**
-     * Add a procedural (behavioral/preference) relation.
-     */
+    /** Add a procedural (behavioral/preference) relation. */
     @JvmOverloads
     fun withProcedural(predicate: String, meaning: String = predicate): Relations =
         this + Relation.procedural(predicate, meaning)
 
-    /**
-     * Add an episodic (event-based) relation.
-     */
+    /** Add an episodic (event-based) relation. */
     @JvmOverloads
     fun withEpisodic(predicate: String, meaning: String = predicate): Relations =
         this + Relation.episodic(predicate, meaning)
 
-    /**
-     * Add a semantic relation with subject type constraint.
-     */
+    /** Add a semantic relation that only applies when the subject is of the given type. */
     fun withSemanticForSubject(subjectType: String, predicate: String, meaning: String): Relations =
         this + Relation.semanticForSubject(predicate, meaning, subjectType)
 
-    /**
-     * Add a procedural relation with subject type constraint.
-     */
+    /** Add a procedural relation that only applies when the subject is of the given type. */
     fun withProceduralForSubject(subjectType: String, predicate: String, meaning: String): Relations =
         this + Relation.proceduralForSubject(predicate, meaning, subjectType)
 
-    /**
-     * Add a semantic relation with both subject and object type constraints.
-     */
+    /** Add a semantic relation constrained to a specific subject and object type pair. */
     fun withSemanticBetween(
         subjectType: String,
         objectType: String,
@@ -126,12 +102,43 @@ data class Relations(
     ): Relations = this + Relation.semanticBetween(predicate, meaning, subjectType, objectType)
 
     /**
-     * Add multiple relations for the same subject type and knowledge type.
-     * Uses the predicate as the meaning for brevity.
+     * Add a semantic relation constrained to a specific subject and object type pair, with an
+     * evidence floor declared inline. This lets you stay in the fluent builder chain rather than
+     * stepping outside it to call [Relation.withEvidenceFloor] separately.
      *
-     * @param subjectType The entity type that can be the subject
-     * @param knowledgeType The epistemological nature of these relations
-     * @param predicates The predicate strings to add
+     * ```kotlin
+     * Relations.empty()
+     *     .withSemanticBetween(
+     *         subjectType = "Person", objectType = "Organization",
+     *         predicate = "works for", meaning = "is employed by",
+     *         floor = EvidenceFloor.ofConfidence(0.7, demoteTo = "affiliated with"),
+     *     )
+     * ```
+     *
+     * Java callers: use [Relation.semanticBetween] + [Relation.withEvidenceFloor] to attach a
+     * floor, since this overload is not `@JvmOverloads`-compatible with the four-parameter form.
+     *
+     * @param floor the minimum evidence the relation requires before it may be asserted at full
+     *   strength; pass null to add the relation without a floor (equivalent to the overload above)
+     */
+    fun withSemanticBetween(
+        subjectType: String,
+        objectType: String,
+        predicate: String,
+        meaning: String,
+        floor: EvidenceFloor?,
+    ): Relations {
+        val relation = Relation.semanticBetween(predicate, meaning, subjectType, objectType)
+        return this + if (floor != null) relation.withEvidenceFloor(floor) else relation
+    }
+
+    /**
+     * Add several relations at once, all sharing the same subject type and knowledge type.
+     * The predicate string is used as the meaning for each one.
+     *
+     * @param subjectType Entity type that can be the subject (string form, e.g. `"Person"`)
+     * @param knowledgeType Knowledge type shared by all added relations
+     * @param predicates Predicate strings to add
      */
     fun withPredicatesForSubject(
         subjectType: String,
@@ -150,12 +157,13 @@ data class Relations(
     }
 
     /**
-     * Add multiple relations for the same subject type and knowledge type.
-     * Uses the predicate as the meaning for brevity.
+     * Same as [withPredicatesForSubject] but takes a class instead of a string — the subject
+     * type is recorded as the class `simpleName`. A mention's type must match it (case-insensitive)
+     * for an edge to project.
      *
-     * @param subjectType The entity class that can be the subject
-     * @param knowledgeType The epistemological nature of these relations
-     * @param predicates The predicate strings to add
+     * @param subjectType Entity class whose simple name is used as the subject type constraint
+     * @param knowledgeType Knowledge type shared by all added relations
+     * @param predicates Predicate strings to add
      */
     fun withPredicatesForSubject(
         subjectType: Class<*>,
@@ -163,22 +171,14 @@ data class Relations(
         vararg predicates: String,
     ): Relations = withPredicatesForSubject(subjectType.simpleName, knowledgeType, *predicates)
 
-    /**
-     * Add multiple procedural relations for a subject type.
-     * Convenience method for common preference/behavior predicates.
-     */
+    /** Add several procedural relations at once for a subject type. */
     fun withProceduralPredicatesForSubject(subjectType: String, vararg predicates: String): Relations =
         withPredicatesForSubject(subjectType, KnowledgeType.PROCEDURAL, *predicates)
 
-    /**
-     * Add multiple semantic relations for a subject type.
-     * Convenience method for common factual predicates.
-     */
+    /** Add several semantic relations at once for a subject type. */
     fun withSemanticPredicatesForSubject(subjectType: String, vararg predicates: String): Relations =
         withPredicatesForSubject(subjectType, KnowledgeType.SEMANTIC, *predicates)
 
-    /**
-     * Returns the relations as a List for compatibility.
-     */
+    /** The relations as a plain list. */
     fun toList(): List<Relation> = relations
 }
