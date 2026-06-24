@@ -35,6 +35,8 @@ import java.time.Instant
  * @property to the inclusive end of the TEMPORAL window
  * @property topK the maximum number of results to return, applied to every mode (clamped by the router)
  * @property depth the graph traversal depth for GRAPH_WALK / HYBRID (clamped by the router)
+ * @property similarityThreshold the minimum vector similarity for VECTOR / HYBRID hits, 0.0..1.0
+ *   (clamped by the router). Defaults to 0.0, which keeps every hit the index returns.
  */
 data class DiscoveryQuery(
     val mode: RetrievalMode,
@@ -44,4 +46,5 @@ data class DiscoveryQuery(
     val to: Instant? = null,
     val topK: Int = 10,
     val depth: Int = 1,
+    val similarityThreshold: Double = 0.0,
 )

@@ -55,6 +55,9 @@ class DiscoveryDtoLeakTest {
         "com.embabel.agent.rag",
         "SimilarityResult",
         "TextSimilaritySearchRequest",
+        // Any raw proposition-package type (e.g. the PropositionStatus enum) must be projected to a
+        // primitive in a DTO, never exposed directly. DTOs surface enum names as Strings.
+        "com.embabel.dice.proposition",
     )
 
     private val forbiddenExactFqns = listOf(

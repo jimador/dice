@@ -79,18 +79,27 @@ class GraphProjectionService(
     fun projectAndPersist(
         propositions: List<Proposition>,
     ): Pair<ProjectionResults<ProjectedRelationship>, RelationshipPersistenceResult> {
-        val pair = persister.projectAndPersist(propositions, graphProjector, schema)
+        // Reconcile BEFORE persisting. A repository-backed reconciler decides "new vs. existing" by
+        // looking the node up in the graph; if we persisted first, the node it should detect as
+        // pre-existing would have just been written, so it would always report Adopt and PROJECTED
+        // would never be recorded. Capture the decision against the pre-persist state per proposition.
         val store = recordStore
+        val decisions: Map<String, ReconciliationDecision> =
+            if (store != null) propositions.associate { it.id to reconciler.reconcile(it, "neo4j") } else emptyMap()
+
+        val pair = persister.projectAndPersist(propositions, graphProjector, schema)
         if (store != null) {
             val runId = UUID.randomUUID().toString()
             pair.first.results.forEach { result ->
                 val (lifecycle, targetRef, reason) = when (result) {
                     is ProjectionSuccess -> when (
-                        val decision = reconciler.reconcile(result.proposition, "neo4j")
+                        val decision = decisions[result.proposition.id] ?: ReconciliationDecision.CreateNew
                     ) {
                         is ReconciliationDecision.CreateNew -> Triple(
                             ProjectionLifecycle.PROJECTED,
-                            (result.projected as? ProjectedRelationship)?.sourceId,
+                            // Reference the produced edge, not just its source node, so findByTargetRef
+                            // resolves to this specific relationship rather than every edge off the source.
+                            (result.projected as? ProjectedRelationship)?.let { "${it.sourceId}-[${it.type}]->${it.targetId}" },
                             null,
                         )
 

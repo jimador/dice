@@ -11,6 +11,8 @@ Kotlin 2.2.0 (one minor version above `dice`'s 2.1.10 — see below). Java 21.
 | `PropositionRepository` | `DrivinePropositionRepository` |
 | `ChunkHistoryStore` | `DrivineChunkHistoryStore` |
 | `DecayManager` | `GraphDecayManager` |
+| `ProjectionRecordStore` | `DrivineProjectionRecordStore` — persists projection lineage as `(:ProjectionRecord)` nodes so it survives a restart and stays queryable by proposition or lifecycle; MERGEs on the natural key (propositionId + runId + target) so a replayed outcome updates in place |
+| `CollectorRecordStore` | `DrivineCollectorRecordStore` — persists the collector audit trail as `(:CollectorRecord)` and `(:CollectorRun)` nodes; MERGEs on natural keys so retried records update rather than duplicate |
 
 ## How it relates to the core SPI
 
@@ -26,10 +28,16 @@ Kotlin 2.2.0 (one minor version above `dice`'s 2.1.10 — see below). Java 21.
 
 ```
 src/main/kotlin/com/embabel/dice/storage/
-  DrivinePropositionRepository.kt   — main repository implementation
-  DrivineChunkHistoryStore.kt       — processed-chunk dedup store
-  GraphDecayManager.kt              — decay tick that updates the graph in place
-  PropositionGraphMapper.kt         — maps between Proposition domain objects and Drivine graph views
+  DrivinePropositionRepository.kt     — main repository implementation
+  DrivineChunkHistoryStore.kt         — processed-chunk dedup store
+  DrivineProjectionRecordStore.kt     — durable ProjectionRecord store (Neo4j-backed lineage)
+  DrivineCollectorRecordStore.kt      — durable CollectorRecord/CollectorRun store (audit trail)
+  GraphDecayManager.kt                — decay tick that updates the graph in place
+  LineageRowMappers.kt                — row mappers shared by the lineage stores: translates
+                                        ProjectionRecord and CollectorRecord to/from property maps;
+                                        kept separate so the fiddly enum/timestamp marshalling
+                                        can be unit-tested without a database
+  PropositionGraphMapper.kt           — maps between Proposition domain objects and Drivine graph views
   model/
     PropositionNode.kt              — @GraphNode for the :Proposition label
     PropositionView.kt              — lean Drivine view (node + mentions, no provenance)

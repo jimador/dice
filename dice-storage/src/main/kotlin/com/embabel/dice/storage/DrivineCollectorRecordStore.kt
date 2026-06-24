@@ -74,14 +74,40 @@ open class DrivineCollectorRecordStore(
     }
 
     @Transactional(readOnly = true)
-    override fun all(): List<CollectorRecord> {
+    override fun all(): List<CollectorRecord> =
+        queryRecords("MATCH (n:CollectorRecord) RETURN n", emptyMap())
+
+    // The SPI defaults filter all() in memory, loading the whole audit trail to answer a single-key
+    // lookup. Push each predicate into Cypher so the database filters and only matching rows return.
+
+    @Transactional(readOnly = true)
+    override fun findByProposition(propositionId: String): List<CollectorRecord> =
+        queryRecords("MATCH (n:CollectorRecord {propositionId: ${'$'}propositionId}) RETURN n", mapOf("propositionId" to propositionId))
+
+    @Transactional(readOnly = true)
+    override fun findByRun(runId: String): List<CollectorRecord> =
+        queryRecords("MATCH (n:CollectorRecord {runId: ${'$'}runId}) RETURN n", mapOf("runId" to runId))
+
+    @Transactional(readOnly = true)
+    override fun findRun(runId: String): CollectorRun? {
         @Suppress("UNCHECKED_CAST")
         val rows = persistenceManager.query(
-            QuerySpecification.withStatement("MATCH (n:CollectorRecord) RETURN n") as QuerySpecification<Any>,
+            QuerySpecification.withStatement("MATCH (n:CollectorRun {runId: ${'$'}runId}) RETURN n")
+                .bind(mapOf("runId" to runId)) as QuerySpecification<Any>,
         )
-        // Skip a corrupt/partial node rather than letting one bad row throw out of fromRow and make
-        // the entire collector audit trail unreadable.
-        return rows.filterIsInstance<Map<*, *>>().mapNotNull { row ->
+        return rows.filterIsInstance<Map<*, *>>().map(CollectorRunRowMapper::fromRow).firstOrNull()
+    }
+
+    /**
+     * Run a parameterized read and map the rows, skipping a corrupt/partial node rather than letting
+     * one bad row throw out of fromRow and make the whole audit trail unreadable.
+     */
+    private fun queryRecords(statement: String, params: Map<String, Any?>): List<CollectorRecord> {
+        @Suppress("UNCHECKED_CAST")
+        val spec = QuerySpecification.withStatement(statement).let {
+            if (params.isEmpty()) it else it.bind(params)
+        } as QuerySpecification<Any>
+        return persistenceManager.query(spec).filterIsInstance<Map<*, *>>().mapNotNull { row ->
             runCatching { CollectorRecordRowMapper.fromRow(row) }
                 .onFailure { logger.warn("Skipping unreadable CollectorRecord row: {}", it.message) }
                 .getOrNull()

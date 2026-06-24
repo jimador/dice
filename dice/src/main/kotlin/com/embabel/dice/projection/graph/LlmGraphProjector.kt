@@ -144,7 +144,7 @@ data class LlmGraphProjector(
     ): ProjectionResult<ProjectedRelationship> {
         // Check policy first
         if (!policy.shouldProject(proposition)) {
-            val reason = proposition.policyRejectionReason()
+            val reason = proposition.policyRejectionReason(policy.confidenceThreshold)
             logger.debug("Proposition skipped by policy: {}", reason)
             return ProjectionSkipped(proposition, reason)
         }

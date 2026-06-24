@@ -20,13 +20,16 @@ import com.embabel.dice.proposition.Proposition
 /**
  * Builds a human-readable explanation for why a proposition was rejected by a projection policy.
  *
- * Checks two common policy gates: confidence below the default threshold (0.85) and
- * unresolved entity mentions. Returns a comma-separated summary, or "policy criteria not met"
- * when neither specific gate fired (i.e. the policy has its own logic not reflected here).
+ * Checks two common policy gates: confidence below [confidenceThreshold] and unresolved entity
+ * mentions. Returns a comma-separated summary, or "policy criteria not met" when neither specific
+ * gate fired (i.e. the policy has its own logic not reflected here).
+ *
+ * @param confidenceThreshold the policy's actual confidence floor, so the message matches the policy
+ *   in play rather than a hardcoded default.
  */
-internal fun Proposition.policyRejectionReason(): String {
+internal fun Proposition.policyRejectionReason(confidenceThreshold: Double = 0.85): String {
     val reasons = mutableListOf<String>()
-    if (confidence < 0.85) {
+    if (confidence < confidenceThreshold) {
         reasons.add("low confidence ($confidence)")
     }
     if (!isFullyResolved()) {

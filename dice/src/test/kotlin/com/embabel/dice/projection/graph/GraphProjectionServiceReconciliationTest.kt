@@ -26,6 +26,7 @@ import com.embabel.dice.proposition.ProjectionSuccess
 import com.embabel.dice.proposition.Proposition
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verifyOrder
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -117,6 +118,32 @@ class GraphProjectionServiceReconciliationTest {
 
         val record = store.all().single()
         assertEquals(ProjectionLifecycle.PROJECTED, record.lifecycle)
-        assertEquals("created-p-default", record.targetRef)
+        // PROJECTED references the produced edge (source-[type]->target), not just the source node.
+        assertEquals("created-p-default-[KNOWS]->node-target", record.targetRef)
+    }
+
+    @Test
+    fun `the reconciler is consulted before the persister writes`() {
+        // A repository-backed reconciler decides new-vs-existing by looking the node up. If we
+        // persisted first it would always find the just-written node and never record PROJECTED, so
+        // the reconcile must happen against the pre-persist state.
+        val p = proposition("p-order")
+        val results = ProjectionResults(listOf(success(p)))
+        every {
+            mockPersister.projectAndPersist(listOf(p), mockProjector, mockSchema)
+        } returns Pair(results, RelationshipPersistenceResult(persistedCount = 1, failedCount = 0))
+
+        val reconciler = mockk<Reconciler>()
+        every { reconciler.reconcile(any(), any()) } returns ReconciliationDecision.CreateNew
+        val service = GraphProjectionService(
+            mockProjector, mockPersister, mockSchema, InMemoryProjectionRecordStore(), reconciler,
+        )
+
+        service.projectAndPersist(listOf(p))
+
+        verifyOrder {
+            reconciler.reconcile(p, "neo4j")
+            mockPersister.projectAndPersist(listOf(p), mockProjector, mockSchema)
+        }
     }
 }

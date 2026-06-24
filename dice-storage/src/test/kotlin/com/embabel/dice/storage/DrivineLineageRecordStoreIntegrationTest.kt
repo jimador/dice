@@ -126,6 +126,24 @@ class DrivineLineageRecordStoreIntegrationTest {
         assertEquals(0, projectionStore.markStaleByProposition("does-not-exist"))
     }
 
+    @Test
+    fun `scoped projection finders push the predicate into Cypher and return only matching records`() {
+        // Three records spread across propositions, targets, runs, refs and lifecycles. Each finder
+        // must return exactly its matching subset (proving the predicate runs in the database), never
+        // the whole table, and an empty list for a key with no matches.
+        projectionStore.record(ProjectionRecord("pA", "neo4j", "edge-A", ProjectionLifecycle.PROJECTED, "run-1"))
+        projectionStore.record(ProjectionRecord("pB", "neo4j", "edge-B", ProjectionLifecycle.ADOPTED, "run-1"))
+        projectionStore.record(ProjectionRecord("pC", "elastic", "edge-C", ProjectionLifecycle.STALE, "run-2"))
+
+        assertEquals(setOf("pA"), projectionStore.findByProposition("pA").map { it.propositionId }.toSet())
+        assertEquals(setOf("pA", "pB"), projectionStore.findByTarget("neo4j").map { it.propositionId }.toSet())
+        assertEquals(setOf("pA", "pB"), projectionStore.findByRun("run-1").map { it.propositionId }.toSet())
+        assertEquals(setOf("pB"), projectionStore.findByTargetRef("edge-B").map { it.propositionId }.toSet())
+        assertEquals(setOf("pC"), projectionStore.findStale().map { it.propositionId }.toSet())
+        assertTrue(projectionStore.findByProposition("missing").isEmpty())
+        assertEquals(3, projectionStore.all().size)
+    }
+
     // ---- CollectorRecordStore ----
 
     @Test
@@ -168,6 +186,19 @@ class DrivineLineageRecordStoreIntegrationTest {
 
         val only = collectorStore.all().single()
         assertEquals(CollectorOutcome.TRANSITIONED, only.outcome)
+    }
+
+    @Test
+    fun `scoped collector finders push the predicate into Cypher and return only matching records`() {
+        collectorStore.record(CollectorRecord("pA", MarkReason.Stale, CollectorOutcome.MARKED, "decay", "run-1"))
+        collectorStore.record(CollectorRecord("pB", MarkReason.Stale, CollectorOutcome.TRANSITIONED, "decay", "run-1"))
+        collectorStore.record(CollectorRecord("pC", MarkReason.Stale, CollectorOutcome.MARKED, "decay", "run-2"))
+
+        assertEquals(setOf("pA"), collectorStore.findByProposition("pA").map { it.propositionId }.toSet())
+        assertEquals(setOf("pA", "pB"), collectorStore.findByRun("run-1").map { it.propositionId }.toSet())
+        assertEquals(setOf("pC"), collectorStore.findByRun("run-2").map { it.propositionId }.toSet())
+        assertTrue(collectorStore.findByProposition("missing").isEmpty())
+        assertEquals(3, collectorStore.all().size)
     }
 
     @Test

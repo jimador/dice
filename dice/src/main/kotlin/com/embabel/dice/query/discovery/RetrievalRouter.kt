@@ -65,13 +65,14 @@ class RetrievalRouter(
     fun retrieve(query: DiscoveryQuery): DiscoveryResult {
         val topK = clampTopK(query.topK)
         val depth = clampDepth(query.depth)
+        val threshold = query.similarityThreshold.coerceIn(0.0, 1.0)
         logger.debug("Routing {} query (topK={} depth={}) for context {}", query.mode, topK, depth, contextId.value.take(8))
         val result = when (query.mode) {
-            RetrievalMode.VECTOR -> vector(query.text, topK)
+            RetrievalMode.VECTOR -> vector(query.text, topK, threshold)
             RetrievalMode.ENTITY -> entity(query.entityId, topK)
             RetrievalMode.GRAPH_WALK -> graphWalk(query.entityId, depth, topK)
             RetrievalMode.TEMPORAL -> temporal(query, topK)
-            RetrievalMode.HYBRID -> hybrid(query.text, query.entityId, depth, topK)
+            RetrievalMode.HYBRID -> hybrid(query.text, query.entityId, depth, topK, threshold)
         }
         logger.debug("Retrieval {} returned {} results (supported={})", query.mode, result.propositions.size, result.supported)
         return result
@@ -108,14 +109,14 @@ class RetrievalRouter(
     // Per-mode routing
     // ------------------------------------------------------------------------
 
-    private fun vector(text: String?, topK: Int): DiscoveryResult {
+    private fun vector(text: String?, topK: Int, similarityThreshold: Double): DiscoveryResult {
         val capable = store as? VectorSearchCapable
             ?: run {
                 logger.debug("VECTOR mode not supported by store {}", store::class.simpleName)
                 return empty(RetrievalMode.VECTOR, supported = false)
             }
         if (text.isNullOrBlank()) return DiscoveryResult(RetrievalMode.VECTOR, supported = true, propositions = emptyList())
-        val hits = capable.findSimilarWithScores(searchRequest(text, topK), scope()).map { it.match }
+        val hits = capable.findSimilarWithScores(searchRequest(text, topK, similarityThreshold), scope()).map { it.match }
         return result(RetrievalMode.VECTOR, supported = true, props = hits)
     }
 
@@ -154,11 +155,11 @@ class RetrievalRouter(
         return result(RetrievalMode.TEMPORAL, supported = true, props = props)
     }
 
-    private fun hybrid(text: String?, entityId: String?, depth: Int, topK: Int): DiscoveryResult {
+    private fun hybrid(text: String?, entityId: String?, depth: Int, topK: Int, similarityThreshold: Double): DiscoveryResult {
         val capable = store as? VectorSearchCapable
         val vectorHits: List<SimilarityResult<Proposition>> =
             if (capable != null && !text.isNullOrBlank()) {
-                capable.findSimilarWithScores(searchRequest(text, topK), scope())
+                capable.findSimilarWithScores(searchRequest(text, topK, similarityThreshold), scope())
             } else {
                 emptyList()
             }
@@ -208,8 +209,8 @@ class RetrievalRouter(
     /** A query bound to this router's context — the access-control scope applied to every mode. */
     private fun scope(): PropositionQuery = PropositionQuery.forContextId(contextId)
 
-    private fun searchRequest(text: String, topK: Int): TextSimilaritySearchRequest =
-        TextSimilaritySearchRequest(query = text, similarityThreshold = 0.0, topK = topK)
+    private fun searchRequest(text: String, topK: Int, similarityThreshold: Double): TextSimilaritySearchRequest =
+        TextSimilaritySearchRequest(query = text, similarityThreshold = similarityThreshold, topK = topK)
 
     private fun result(mode: RetrievalMode, supported: Boolean, props: List<Proposition>): DiscoveryResult =
         DiscoveryResult(mode, supported, props.map { PropositionSummaryDto.from(it) })
