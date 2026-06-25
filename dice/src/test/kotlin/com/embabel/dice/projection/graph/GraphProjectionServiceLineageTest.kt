@@ -80,9 +80,8 @@ class GraphProjectionServiceLineageTest {
         val persistence = RelationshipPersistenceResult(persistedCount = 1, failedCount = 0)
         val propositions = listOf(pSuccess, pSkipped, pFailed)
 
-        every {
-            mockPersister.projectAndPersist(propositions, mockProjector, mockSchema)
-        } returns Pair(results, persistence)
+        every { mockProjector.projectAll(propositions, mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
 
         val store = InMemoryProjectionRecordStore()
         val service = GraphProjectionService(mockProjector, mockPersister, mockSchema, store)
@@ -113,19 +112,49 @@ class GraphProjectionServiceLineageTest {
     }
 
     @Test
+    fun `records FAILED when relationship persistence fails after projection succeeds`() {
+        val p = proposition("p-persist-failed")
+        val relationship = ProjectedRelationship(
+            sourceId = "node-1",
+            targetId = "node-2",
+            type = "KNOWS",
+            confidence = 1.0,
+            sourcePropositionIds = listOf(p.id),
+        )
+        val results = ProjectionResults(listOf(ProjectionSuccess(p, relationship)))
+        val persistence = RelationshipPersistenceResult(
+            persistedCount = 0,
+            failedCount = 1,
+            errors = listOf("merge failed"),
+        )
+
+        every { mockProjector.projectAll(listOf(p), mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
+
+        val store = InMemoryProjectionRecordStore()
+        val service = GraphProjectionService(mockProjector, mockPersister, mockSchema, store)
+
+        service.projectAndPersist(listOf(p))
+
+        val record = store.all().single()
+        assertEquals(ProjectionLifecycle.FAILED, record.lifecycle)
+        assertEquals("relationship persistence failed: merge failed", record.reason)
+        assertNull(record.targetRef, "failed persistence must not claim a produced edge targetRef")
+    }
+
+    @Test
     fun `with no store the returned pair is unchanged and nothing is recorded`() {
         val propositions = listOf<Proposition>()
         val results = ProjectionResults<ProjectedRelationship>(emptyList())
         val persistence = RelationshipPersistenceResult(persistedCount = 0, failedCount = 0)
-        val expectedPair = Pair(results, persistence)
 
-        every {
-            mockPersister.projectAndPersist(propositions, mockProjector, mockSchema)
-        } returns expectedPair
+        every { mockProjector.projectAll(propositions, mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
 
         val service = GraphProjectionService(mockProjector, mockPersister, mockSchema)
         val result = service.projectAndPersist(propositions)
 
-        assertSame(expectedPair, result)
+        assertSame(results, result.first)
+        assertSame(persistence, result.second)
     }
 }

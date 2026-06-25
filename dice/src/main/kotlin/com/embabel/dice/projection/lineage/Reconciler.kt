@@ -15,6 +15,7 @@
  */
 package com.embabel.dice.projection.lineage
 
+import com.embabel.dice.proposition.Projection
 import com.embabel.dice.proposition.Proposition
 
 /**
@@ -38,4 +39,14 @@ interface Reconciler {
      * @return whether to create new, adopt, or align with an existing artifact
      */
     fun reconcile(proposition: Proposition, target: String): ReconciliationDecision
+
+    /**
+     * Decide how [proposition]'s concrete [projected] artifact should be projected to [target].
+     *
+     * Generic reconcilers can ignore [projected] by relying on the default delegation. Target-aware
+     * reconcilers should override this overload when the artifact identity matters; for graph
+     * projection, endpoint nodes and relationship edges are distinct artifacts.
+     */
+    fun reconcile(proposition: Proposition, target: String, projected: Projection): ReconciliationDecision =
+        reconcile(proposition, target)
 }

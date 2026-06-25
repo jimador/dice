@@ -60,14 +60,18 @@ class NamedEntityDataRepositoryGraphRelationshipPersister @JvmOverloads construc
         var persistedCount = 0
         var failedCount = 0
         val errors = mutableListOf<String>()
+        val persistedRefs = mutableSetOf<String>()
+        val failedRefs = mutableSetOf<String>()
 
         for (relationship in relationships) {
             try {
                 persistRelationship(relationship)
                 persistedCount++
+                persistedRefs.add(relationship.edgeRef)
                 logger.info("Persisted relationship: {}", relationship.infoString(true))
             } catch (e: Exception) {
                 failedCount++
+                failedRefs.add(relationship.edgeRef)
                 val errorMsg = "Failed to persist ${relationship.infoString(false)}: ${e.message}"
                 errors.add(errorMsg)
                 logger.warn(errorMsg, e)
@@ -75,7 +79,13 @@ class NamedEntityDataRepositoryGraphRelationshipPersister @JvmOverloads construc
         }
 
         logger.info("Persisted {}/{} relationships", persistedCount, relationships.size)
-        return RelationshipPersistenceResult(persistedCount, failedCount, errors)
+        return RelationshipPersistenceResult(
+            persistedCount = persistedCount,
+            failedCount = failedCount,
+            errors = errors,
+            persistedRelationshipRefs = persistedRefs,
+            failedRelationshipRefs = failedRefs,
+        )
     }
 
     /**
@@ -153,8 +163,11 @@ class NamedEntityDataRepositoryGraphRelationshipPersister @JvmOverloads construc
         var persistedCount = 0
         var failedCount = 0
         val errors = mutableListOf<String>()
+        val persistedRefs = mutableSetOf<String>()
+        val failedRefs = mutableSetOf<String>()
 
         for (pair in entityPairs) {
+            val relationshipRef = "${pair.sourceId}-[${pair.relationshipType}]->${pair.targetId}"
             try {
                 val result = synthesizer.synthesize(
                     SynthesisRequest(
@@ -190,8 +203,10 @@ class NamedEntityDataRepositoryGraphRelationshipPersister @JvmOverloads construc
                 )
                 persistRelationship(relationship)
                 persistedCount++
+                persistedRefs.add(relationship.edgeRef)
             } catch (e: Exception) {
                 failedCount++
+                failedRefs.add(relationshipRef)
                 val errorMsg = "Failed to synthesize description for ${pair.sourceName} -> ${pair.targetName}: ${e.message}"
                 errors.add(errorMsg)
                 logger.warn(errorMsg, e)
@@ -199,6 +214,12 @@ class NamedEntityDataRepositoryGraphRelationshipPersister @JvmOverloads construc
         }
 
         logger.info("Synthesized and updated {}/{} relationship descriptions", persistedCount, entityPairs.size)
-        return RelationshipPersistenceResult(persistedCount, failedCount, errors)
+        return RelationshipPersistenceResult(
+            persistedCount = persistedCount,
+            failedCount = failedCount,
+            errors = errors,
+            persistedRelationshipRefs = persistedRefs,
+            failedRelationshipRefs = failedRefs,
+        )
     }
 }

@@ -24,13 +24,17 @@ import com.embabel.dice.projection.memory.CollectorRunner
 import com.embabel.dice.proposition.EntityMention
 import com.embabel.dice.proposition.MentionRole
 import com.embabel.dice.proposition.Proposition
-import com.embabel.dice.query.graph.GraphQuery
+import com.embabel.dice.proposition.PropositionRepository
+import com.embabel.dice.proposition.store.InMemoryPropositionRepository
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.KotlinModule
+import org.junit.jupiter.api.Assertions.assertDoesNotThrow
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
@@ -83,13 +87,30 @@ class DiscoveryControllerTest {
             .registerModule(JavaTimeModule())
         val controller = DiscoveryController(
             store = repository,
-            graphQuery = GraphQuery(repository, ContextId(contextId)),
             projectionRecordStore = emptyRecordStore,
             collectorRunner = noopCollectorRunner,
         )
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
             .setMessageConverters(MappingJackson2HttpMessageConverter(objectMapper))
             .build()
+    }
+
+    @Test
+    fun `DiceRestConfiguration can be imported without discovery support beans`() {
+        AnnotationConfigApplicationContext().use { context ->
+            context.registerBean(
+                "propositionRepository",
+                PropositionRepository::class.java,
+                java.util.function.Supplier { InMemoryPropositionRepository() },
+            )
+            context.register(DiceRestConfiguration::class.java)
+
+            assertDoesNotThrow { context.refresh() }
+            assertFalse(
+                context.getBeansOfType(DiscoveryController::class.java).isNotEmpty(),
+                "DiscoveryController must stay inactive until all discovery support beans are present",
+            )
+        }
     }
 
     @Test
@@ -176,7 +197,6 @@ class DiscoveryControllerTest {
             .registerModule(JavaTimeModule())
         val controller = DiscoveryController(
             store = failingStore,
-            graphQuery = GraphQuery(failingStore, ContextId(contextId)),
             projectionRecordStore = emptyRecordStore,
             collectorRunner = noopCollectorRunner,
         )

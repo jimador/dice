@@ -17,10 +17,17 @@ package com.embabel.dice.projection.graph
 
 import com.embabel.agent.core.ContextId
 import com.embabel.agent.core.DataDictionary
+import com.embabel.agent.rag.model.NamedEntityData
+import com.embabel.agent.rag.model.RelationshipDirection
+import com.embabel.agent.rag.service.NamedEntityDataRepository
+import com.embabel.agent.rag.service.RetrievableIdentifier
 import com.embabel.dice.projection.lineage.ReconciliationDecision
 import com.embabel.dice.projection.lineage.Reconciler
 import com.embabel.dice.projection.lineage.InMemoryProjectionRecordStore
 import com.embabel.dice.projection.lineage.ProjectionLifecycle
+import com.embabel.dice.projection.lineage.RepositoryBackedReconciler
+import com.embabel.dice.proposition.EntityMention
+import com.embabel.dice.proposition.MentionRole
 import com.embabel.dice.proposition.ProjectionResults
 import com.embabel.dice.proposition.ProjectionSuccess
 import com.embabel.dice.proposition.Proposition
@@ -70,9 +77,8 @@ class GraphProjectionServiceReconciliationTest {
         val results = ProjectionResults(listOf(success(pAdopt), success(pAlign)))
         val persistence = RelationshipPersistenceResult(persistedCount = 2, failedCount = 0)
 
-        every {
-            mockPersister.projectAndPersist(propositions, mockProjector, mockSchema)
-        } returns Pair(results, persistence)
+        every { mockProjector.projectAll(propositions, mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
 
         val resolver = object : Reconciler {
             override fun reconcile(proposition: Proposition, target: String): ReconciliationDecision =
@@ -100,6 +106,59 @@ class GraphProjectionServiceReconciliationTest {
     }
 
     @Test
+    fun `existing endpoint nodes do not mark a newly-created relationship as adopted`() {
+        val p = Proposition(
+            id = "p-endpoints-only",
+            contextId = ContextId("ctx"),
+            text = "Rod knows Tom",
+            mentions = listOf(
+                EntityMention("Rod", "Person", resolvedId = "person-rod", role = MentionRole.SUBJECT),
+                EntityMention("Tom", "Person", resolvedId = "person-tom", role = MentionRole.OBJECT),
+            ),
+            confidence = 1.0,
+        )
+        val relationship = ProjectedRelationship(
+            sourceId = "person-rod",
+            targetId = "person-tom",
+            type = "KNOWS",
+            confidence = 1.0,
+            sourcePropositionIds = listOf(p.id),
+        )
+        val results = ProjectionResults(listOf(ProjectionSuccess(p, relationship)))
+        val persistence = RelationshipPersistenceResult(persistedCount = 1, failedCount = 0)
+
+        every { mockProjector.projectAll(listOf(p), mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
+
+        val repository = mockk<NamedEntityDataRepository>(relaxed = true)
+        val source = mockk<NamedEntityData>()
+        every { source.labels() } returns setOf("Person")
+        every { repository.findById("person-rod") } returns source
+        every {
+            repository.findRelated(
+                RetrievableIdentifier("person-rod", "Person"),
+                "KNOWS",
+                RelationshipDirection.OUTGOING,
+            )
+        } returns emptyList()
+
+        val store = InMemoryProjectionRecordStore()
+        val service = GraphProjectionService(
+            mockProjector,
+            mockPersister,
+            mockSchema,
+            store,
+            RepositoryBackedReconciler(repository),
+        )
+
+        service.projectAndPersist(listOf(p))
+
+        val record = store.all().single()
+        assertEquals(ProjectionLifecycle.PROJECTED, record.lifecycle)
+        assertEquals("person-rod-[KNOWS]->person-tom", record.targetRef)
+    }
+
+    @Test
     fun `default constructor (no resolver) records PROJECTED for successes`() {
         val p = proposition("p-default")
         val propositions = listOf(p)
@@ -107,9 +166,8 @@ class GraphProjectionServiceReconciliationTest {
         val results = ProjectionResults(listOf(success(p)))
         val persistence = RelationshipPersistenceResult(persistedCount = 1, failedCount = 0)
 
-        every {
-            mockPersister.projectAndPersist(propositions, mockProjector, mockSchema)
-        } returns Pair(results, persistence)
+        every { mockProjector.projectAll(propositions, mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
 
         val store = InMemoryProjectionRecordStore()
         val service = GraphProjectionService(mockProjector, mockPersister, mockSchema, store)
@@ -129,12 +187,12 @@ class GraphProjectionServiceReconciliationTest {
         // the reconcile must happen against the pre-persist state.
         val p = proposition("p-order")
         val results = ProjectionResults(listOf(success(p)))
-        every {
-            mockPersister.projectAndPersist(listOf(p), mockProjector, mockSchema)
-        } returns Pair(results, RelationshipPersistenceResult(persistedCount = 1, failedCount = 0))
+        val persistence = RelationshipPersistenceResult(persistedCount = 1, failedCount = 0)
+        every { mockProjector.projectAll(listOf(p), mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
 
         val reconciler = mockk<Reconciler>()
-        every { reconciler.reconcile(any(), any()) } returns ReconciliationDecision.CreateNew
+        every { reconciler.reconcile(any(), any(), any()) } returns ReconciliationDecision.CreateNew
         val service = GraphProjectionService(
             mockProjector, mockPersister, mockSchema, InMemoryProjectionRecordStore(), reconciler,
         )
@@ -142,8 +200,9 @@ class GraphProjectionServiceReconciliationTest {
         service.projectAndPersist(listOf(p))
 
         verifyOrder {
-            reconciler.reconcile(p, "neo4j")
-            mockPersister.projectAndPersist(listOf(p), mockProjector, mockSchema)
+            mockProjector.projectAll(listOf(p), mockSchema)
+            reconciler.reconcile(p, "neo4j", results.projected.single())
+            mockPersister.persist(results)
         }
     }
 }

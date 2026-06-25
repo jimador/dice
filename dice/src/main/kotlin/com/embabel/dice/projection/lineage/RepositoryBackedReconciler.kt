@@ -15,28 +15,21 @@
  */
 package com.embabel.dice.projection.lineage
 
+import com.embabel.agent.rag.model.RelationshipDirection
 import com.embabel.agent.rag.service.NamedEntityDataRepository
+import com.embabel.agent.rag.service.RetrievableIdentifier
+import com.embabel.dice.projection.graph.ProjectedRelationship
+import com.embabel.dice.proposition.Projection
 import com.embabel.dice.proposition.Proposition
 import org.slf4j.LoggerFactory
 
 /**
- * [Reconciler] that adopts an existing target node when a proposition's
- * mention already resolves to one in the backing [NamedEntityDataRepository].
+ * [Reconciler] that adopts an existing graph relationship when the backing
+ * [NamedEntityDataRepository] can prove the exact projected edge already exists.
  *
- * Unlike [AlwaysCreateReconciler], this consults the repository: it walks
- * every mention carrying a non-null resolved id and, as soon as
- * [NamedEntityDataRepository.findById] returns a node for one of those ids,
- * returns [ReconciliationDecision.Adopt] with that id. Walking (rather than only
- * checking the first resolved id) ensures that a stale/ghost id on an earlier
- * mention does not mask a live, adoptable node referenced by a later mention —
- * which would otherwise mint a duplicate node. This lets projection reuse a
- * pre-existing node (no duplicate) rather than minting a new one. When no
- * resolved mention maps to an existing node, it falls back to
- * [ReconciliationDecision.CreateNew].
- *
- * The lookup is intentionally narrow (exact id only). Name-based and fuzzy
- * matching against the mention span/type are a deliberate future follow-up, so
- * reconciliation stays deterministic for the no-duplicate-node guarantee.
+ * Endpoint nodes are deliberately not adopted as the projection artifact: graph projection creates or
+ * reuses a relationship edge, while node reuse is handled by the persister's id-keyed saves/MERGE.
+ * Without a concrete projected edge this reconciler returns [ReconciliationDecision.CreateNew].
  *
  * @property repository The entity store consulted for existing nodes
  */
@@ -47,14 +40,52 @@ class RepositoryBackedReconciler(
     private val logger = LoggerFactory.getLogger(RepositoryBackedReconciler::class.java)
 
     override fun reconcile(proposition: Proposition, target: String): ReconciliationDecision {
-        val adoptId = proposition.mentions.asSequence()
-            .mapNotNull { it.resolvedId }
-            .firstOrNull { repository.findById(it) != null }
-        if (adoptId != null) {
-            logger.debug("Adopt existing node {} for proposition {} -> {}", adoptId.take(8), proposition.id.take(8), target)
-            return ReconciliationDecision.Adopt(adoptId)
+        logger.debug(
+            "No projected artifact supplied for proposition {} -> {}; will create new",
+            proposition.id.take(8),
+            target,
+        )
+        return ReconciliationDecision.CreateNew
+    }
+
+    override fun reconcile(proposition: Proposition, target: String, projected: Projection): ReconciliationDecision {
+        val relationship = projected as? ProjectedRelationship ?: return reconcile(proposition, target)
+        val sourceEntity = repository.findById(relationship.sourceId) ?: run {
+            logger.debug(
+                "No source node {} found for projected edge {} from proposition {}; will create new",
+                relationship.sourceId.take(8),
+                relationship.edgeRef,
+                proposition.id.take(8),
+            )
+            return ReconciliationDecision.CreateNew
         }
-        logger.debug("No existing node found for proposition {} -> {}; will create new", proposition.id.take(8), target)
+        val sourceType = sourceEntity.labels().firstOrNull() ?: "Entity"
+        val existing = runCatching {
+            repository.findRelated(
+                RetrievableIdentifier(relationship.sourceId, sourceType),
+                relationship.type,
+                RelationshipDirection.OUTGOING,
+            ).any { it.id == relationship.targetId }
+        }.getOrElse {
+            logger.debug(
+                "Could not inspect existing relationship {} for proposition {}: {}",
+                relationship.edgeRef,
+                proposition.id.take(8),
+                it.message,
+            )
+            false
+        }
+
+        if (existing) {
+            logger.debug(
+                "Adopt existing relationship {} for proposition {} -> {}",
+                relationship.edgeRef,
+                proposition.id.take(8),
+                target,
+            )
+            return ReconciliationDecision.Adopt(relationship.edgeRef)
+        }
+        logger.debug("No existing relationship {} for proposition {} -> {}; will create new", relationship.edgeRef, proposition.id.take(8), target)
         return ReconciliationDecision.CreateNew
     }
 }

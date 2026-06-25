@@ -79,41 +79,58 @@ class GraphProjectionService(
     fun projectAndPersist(
         propositions: List<Proposition>,
     ): Pair<ProjectionResults<ProjectedRelationship>, RelationshipPersistenceResult> {
-        // Reconcile BEFORE persisting. A repository-backed reconciler decides "new vs. existing" by
-        // looking the node up in the graph; if we persisted first, the node it should detect as
-        // pre-existing would have just been written, so it would always report Adopt and PROJECTED
-        // would never be recorded. Capture the decision against the pre-persist state per proposition.
+        val projectionResults = graphProjector.projectAll(propositions, schema)
+
+        // Reconcile BEFORE persisting. A repository-backed reconciler decides "new vs. existing"
+        // against the concrete projected edge; if we persisted first, it would find the just-written
+        // relationship and every successful projection would look ADOPTED.
         val store = recordStore
         val decisions: Map<String, ReconciliationDecision> =
-            if (store != null) propositions.associate { it.id to reconciler.reconcile(it, "neo4j") } else emptyMap()
+            if (store != null) {
+                projectionResults.results
+                    .filterIsInstance<ProjectionSuccess<ProjectedRelationship>>()
+                    .associate { it.proposition.id to reconciler.reconcile(it.proposition, "neo4j", it.projected) }
+            } else {
+                emptyMap()
+            }
 
-        val pair = persister.projectAndPersist(propositions, graphProjector, schema)
+        val persistenceResult = persister.persist(projectionResults)
+        val pair = Pair(projectionResults, persistenceResult)
         if (store != null) {
             val runId = UUID.randomUUID().toString()
             pair.first.results.forEach { result ->
                 val (lifecycle, targetRef, reason) = when (result) {
-                    is ProjectionSuccess -> when (
-                        val decision = decisions[result.proposition.id] ?: ReconciliationDecision.CreateNew
-                    ) {
-                        is ReconciliationDecision.CreateNew -> Triple(
-                            ProjectionLifecycle.PROJECTED,
-                            // Reference the produced edge, not just its source node, so findByTargetRef
-                            // resolves to this specific relationship rather than every edge off the source.
-                            (result.projected as? ProjectedRelationship)?.let { "${it.sourceId}-[${it.type}]->${it.targetId}" },
-                            null,
-                        )
+                    is ProjectionSuccess -> {
+                        val relationship = result.projected as? ProjectedRelationship
+                        if (persistenceFailed(relationship, persistenceResult)) {
+                            Triple(
+                                ProjectionLifecycle.FAILED,
+                                null,
+                                persistenceFailureReason(persistenceResult),
+                            )
+                        } else {
+                            when (val decision = decisions[result.proposition.id] ?: ReconciliationDecision.CreateNew) {
+                                is ReconciliationDecision.CreateNew -> Triple(
+                                    ProjectionLifecycle.PROJECTED,
+                                    // Reference the produced edge, not just its source node, so findByTargetRef
+                                    // resolves to this specific relationship rather than every edge off the source.
+                                    relationship?.edgeRef,
+                                    null,
+                                )
 
-                        is ReconciliationDecision.Adopt -> Triple(
-                            ProjectionLifecycle.ADOPTED,
-                            decision.targetRef,
-                            "adopted existing artifact",
-                        )
+                                is ReconciliationDecision.Adopt -> Triple(
+                                    ProjectionLifecycle.ADOPTED,
+                                    decision.targetRef,
+                                    "adopted existing artifact",
+                                )
 
-                        is ReconciliationDecision.Align -> Triple(
-                            ProjectionLifecycle.ADOPTED,
-                            decision.targetRef,
-                            "aligned with existing artifact (node merge deferred)",
-                        )
+                                is ReconciliationDecision.Align -> Triple(
+                                    ProjectionLifecycle.ADOPTED,
+                                    decision.targetRef,
+                                    "aligned with existing artifact (node merge deferred)",
+                                )
+                            }
+                        }
                     }
 
                     is ProjectionSkipped -> Triple(
@@ -148,4 +165,22 @@ class GraphProjectionService(
         }
         return pair
     }
+
+    private fun persistenceFailed(
+        relationship: ProjectedRelationship?,
+        persistenceResult: RelationshipPersistenceResult,
+    ): Boolean {
+        if (persistenceResult.failedCount == 0) return false
+        val failedRefs = persistenceResult.failedRelationshipRefs
+        if (failedRefs.isEmpty()) return true
+        val ref = relationship?.edgeRef ?: return true
+        return ref in failedRefs
+    }
+
+    private fun persistenceFailureReason(persistenceResult: RelationshipPersistenceResult): String =
+        if (persistenceResult.errors.isEmpty()) {
+            "relationship persistence failed"
+        } else {
+            "relationship persistence failed: ${persistenceResult.errors.joinToString("; ")}"
+        }
 }

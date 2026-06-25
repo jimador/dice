@@ -112,7 +112,7 @@ class GraphQueryAuthorityFilterTest {
         )
         val native = HonoringNativeStore(store(), canned)
 
-        val result = GraphQuery(native, contextId).neighborhood("A", minAuthority = AuthorityTier.SECONDARY)
+        val result = GraphQuery(native).neighborhood("A", minAuthority = AuthorityTier.SECONDARY)
 
         assertTrue(result.neighbours.any { it.entityId == "NATIVE" }, "native adapter's answer is used")
         assertEquals(AuthorityTier.SECONDARY, native.receivedFloor, "the floor is handed to the adapter")
@@ -122,7 +122,7 @@ class GraphQueryAuthorityFilterTest {
     fun `authority-filtered query falls back to the portable path when the native adapter does not honour the floor`() {
         val native = NonHonoringNativeStore(store())
 
-        val result = GraphQuery(native, contextId).neighborhood("A", minAuthority = AuthorityTier.SECONDARY)
+        val result = GraphQuery(native).neighborhood("A", minAuthority = AuthorityTier.SECONDARY)
 
         // Portable filtering ran: PRIMARY B kept, DERIVED C dropped, and the adapter's sentinel
         // neighbour never appears because the adapter was not consulted for the filtered query.

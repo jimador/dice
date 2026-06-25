@@ -51,6 +51,9 @@ data class ProjectedRelationship(
     /** Same as [targetId] — convenience alias. */
     val toId: String get() = targetId
 
+    /** Stable lineage reference for this projected edge. */
+    val edgeRef: String get() = "$sourceId-[$type]->$targetId"
+
     override fun infoString(verbose: Boolean?, indent: Int): String {
         return if (verbose == true) {
             "ProjectedRelationship($sourceId -[$type]-> $targetId, conf=$confidence, " +

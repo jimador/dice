@@ -17,7 +17,10 @@ package com.embabel.dice.projection.lineage
 
 import com.embabel.agent.core.ContextId
 import com.embabel.agent.rag.model.NamedEntityData
+import com.embabel.agent.rag.model.RelationshipDirection
 import com.embabel.agent.rag.service.NamedEntityDataRepository
+import com.embabel.agent.rag.service.RetrievableIdentifier
+import com.embabel.dice.projection.graph.ProjectedRelationship
 import com.embabel.dice.proposition.EntityMention
 import com.embabel.dice.proposition.MentionRole
 import com.embabel.dice.proposition.Proposition
@@ -41,9 +44,8 @@ class RepositoryBackedReconcilerTest {
         )
 
     @Test
-    fun `adopts existing node when a resolved mention is present in the repository`() {
+    fun `creates new when only an endpoint node exists without a projected relationship`() {
         val repo = mockk<NamedEntityDataRepository>()
-        every { repo.findById("user-rod") } returns mockk<NamedEntityData>()
 
         val resolver = RepositoryBackedReconciler(repo)
         val decision = resolver.reconcile(
@@ -55,12 +57,12 @@ class RepositoryBackedReconcilerTest {
             "neo4j",
         )
 
-        assertEquals(ReconciliationDecision.Adopt("user-rod"), decision)
-        verify { repo.findById("user-rod") }
+        assertEquals(ReconciliationDecision.CreateNew, decision)
+        verify(exactly = 0) { repo.findById(any()) }
     }
 
     @Test
-    fun `creates new when the resolved id is absent from the repository`() {
+    fun `creates new when the projected relationship source is absent from the repository`() {
         val repo = mockk<NamedEntityDataRepository>()
         every { repo.findById("ghost") } returns null
 
@@ -72,6 +74,13 @@ class RepositoryBackedReconcilerTest {
                 ),
             ),
             "neo4j",
+            ProjectedRelationship(
+                sourceId = "ghost",
+                targetId = "contact-tom",
+                type = "KNOWS",
+                confidence = 0.9,
+                sourcePropositionIds = listOf("prop-1"),
+            ),
         )
 
         assertEquals(ReconciliationDecision.CreateNew, decision)
@@ -98,25 +107,47 @@ class RepositoryBackedReconcilerTest {
     }
 
     @Test
-    fun `adopts a later live mention when an earlier resolved id is stale`() {
+    fun `adopts an existing projected relationship by edge ref`() {
         val repo = mockk<NamedEntityDataRepository>()
-        // First resolved mention points at a stale/ghost id; the second is live.
-        every { repo.findById("ghost-rod") } returns null
-        every { repo.findById("contact-tom") } returns mockk<NamedEntityData>()
+        val source = mockk<NamedEntityData>()
+        val target = mockk<NamedEntityData>()
+        every { source.labels() } returns setOf("Person")
+        every { target.id } returns "contact-tom"
+        every { repo.findById("user-rod") } returns source
+        every {
+            repo.findRelated(
+                RetrievableIdentifier("user-rod", "Person"),
+                "KNOWS",
+                RelationshipDirection.OUTGOING,
+            )
+        } returns listOf(target)
 
         val resolver = RepositoryBackedReconciler(repo)
         val decision = resolver.reconcile(
             proposition(
                 listOf(
-                    EntityMention("Rod", "Person", resolvedId = "ghost-rod", role = MentionRole.SUBJECT),
+                    EntityMention("Rod", "Person", resolvedId = "user-rod", role = MentionRole.SUBJECT),
                     EntityMention("Tom", "Contact", resolvedId = "contact-tom", role = MentionRole.OBJECT),
                 ),
             ),
             "neo4j",
+            ProjectedRelationship(
+                sourceId = "user-rod",
+                targetId = "contact-tom",
+                type = "KNOWS",
+                confidence = 0.9,
+                sourcePropositionIds = listOf("prop-1"),
+            ),
         )
 
-        assertEquals(ReconciliationDecision.Adopt("contact-tom"), decision)
-        verify { repo.findById("ghost-rod") }
-        verify { repo.findById("contact-tom") }
+        assertEquals(ReconciliationDecision.Adopt("user-rod-[KNOWS]->contact-tom"), decision)
+        verify { repo.findById("user-rod") }
+        verify {
+            repo.findRelated(
+                RetrievableIdentifier("user-rod", "Person"),
+                "KNOWS",
+                RelationshipDirection.OUTGOING,
+            )
+        }
     }
 }

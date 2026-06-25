@@ -113,15 +113,14 @@ class SeededGraphNoDuplicateNodesIT {
 
             val after = countNodes(driver)
 
-            // (4) The reconciliation decision — not merely the persister's MERGE — is what
-            //     reused the seeded nodes. Prove the resolver fired and chose ADOPTED
-            //     against a seeded id, then confirm no duplicates were minted.
+            // (4) The seeded endpoint nodes are reused by id-keyed persistence, while the newly
+            //     created relationship is recorded as the projected artifact.
             assertTrue(
                 recordStore.all().any {
-                    it.lifecycle == ProjectionLifecycle.ADOPTED &&
-                        (it.targetRef == ROD_ID || it.targetRef == TOM_ID)
+                    it.lifecycle == ProjectionLifecycle.PROJECTED &&
+                        it.targetRef == "$ROD_ID-[KNOWS]->$TOM_ID"
                 },
-                "reconciler must have decided ADOPTED against a seeded node id",
+                "lineage must reference the produced relationship edge, not an endpoint node",
             )
             assertEquals(before, after, "projection must not mint duplicate nodes")
             assertEquals(2L, after, "exactly the two seeded nodes should remain")

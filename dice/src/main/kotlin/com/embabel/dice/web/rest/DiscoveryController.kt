@@ -55,16 +55,14 @@ import org.springframework.web.bind.annotation.RestController
  * context from a request body. Result size and traversal depth are clamped by the router.
  *
  * @param store the backing proposition store; its declared fragments determine native mode support
- * @param graphQuery the portable graph facade for path / why-explain / graph-walk
  * @param projectionRecordStore the inverse projection index summarized into per-target health
  * @param collectorRunner the mark-and-sweep runner invoked in non-mutating dry-run mode
  */
 @RestController
 @RequestMapping("/api/v1/contexts/{contextId}/discovery")
-@ConditionalOnBean(PropositionStore::class)
+@ConditionalOnBean(value = [PropositionStore::class, ProjectionRecordStore::class, CollectorRunner::class])
 class DiscoveryController(
     private val store: PropositionStore,
-    private val graphQuery: GraphQuery,
     private val projectionRecordStore: ProjectionRecordStore,
     private val collectorRunner: CollectorRunner,
 ) {
@@ -141,5 +139,7 @@ class DiscoveryController(
 
     /** Build a router scoped to the path-supplied context only. */
     private fun router(contextId: String): RetrievalRouter =
-        RetrievalRouter(store, graphQuery, ContextId(contextId))
+        ContextId(contextId).let { scopedContext ->
+            RetrievalRouter(store, GraphQuery(store, scopedContext), scopedContext)
+        }
 }

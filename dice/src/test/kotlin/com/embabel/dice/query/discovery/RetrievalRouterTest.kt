@@ -220,7 +220,7 @@ class RetrievalRouterTest {
     @Test
     fun `VECTOR against a fragment-absent store returns empty and unsupported without scanning`() {
         val store = ScanForbiddenStore().apply { save(proposition("p1")) }
-        val router = RetrievalRouter(store, GraphQuery(store, contextId), contextId)
+        val router = RetrievalRouter(store, GraphQuery(store), contextId)
 
         val result = router.retrieve(DiscoveryQuery(mode = RetrievalMode.VECTOR, text = "anything"))
 
@@ -232,7 +232,7 @@ class RetrievalRouterTest {
     @Test
     fun `TEMPORAL against a fragment-absent store returns empty and unsupported without scanning`() {
         val store = ScanForbiddenStore().apply { save(proposition("p1")) }
-        val router = RetrievalRouter(store, GraphQuery(store, contextId), contextId)
+        val router = RetrievalRouter(store, GraphQuery(store), contextId)
 
         val result = router.retrieve(
             DiscoveryQuery(mode = RetrievalMode.TEMPORAL, from = Instant.EPOCH, to = Instant.now()),
@@ -249,7 +249,7 @@ class RetrievalRouterTest {
             save(proposition("p1", entityId = "A"))
             save(proposition("p2", entityId = "B"))
         }
-        val router = RetrievalRouter(store, GraphQuery(store, contextId), contextId)
+        val router = RetrievalRouter(store, GraphQuery(store), contextId)
 
         val result = router.retrieve(DiscoveryQuery(mode = RetrievalMode.ENTITY, entityId = "A"))
 
@@ -281,7 +281,7 @@ class RetrievalRouterTest {
                 neighbours = listOf(RelatedEntity("B", listOf(shared, g1))),
             ),
         )
-        val router = RetrievalRouter(store, GraphQuery(store, contextId), contextId)
+        val router = RetrievalRouter(store, GraphQuery(store), contextId)
 
         val result = router.retrieve(
             DiscoveryQuery(mode = RetrievalMode.HYBRID, text = "q", entityId = "A", topK = 10),
@@ -303,7 +303,7 @@ class RetrievalRouterTest {
                 listOf(RelatedEntity("B", listOf(proposition("c"), proposition("d")))),
             ),
         )
-        val router = RetrievalRouter(store, GraphQuery(store, contextId), contextId)
+        val router = RetrievalRouter(store, GraphQuery(store), contextId)
 
         val result = router.retrieve(
             DiscoveryQuery(mode = RetrievalMode.HYBRID, text = "q", entityId = "A", topK = 2),
@@ -331,7 +331,7 @@ class RetrievalRouterTest {
                 ),
             )
         }
-        val router = RetrievalRouter(store, GraphQuery(store, contextId), contextId)
+        val router = RetrievalRouter(store, GraphQuery(store), contextId)
 
         val result = router.retrieve(
             DiscoveryQuery(mode = RetrievalMode.HYBRID, text = "q", entityId = "A", topK = 10),
@@ -348,7 +348,7 @@ class RetrievalRouterTest {
             vectorHits = emptyList(),
             neighbourhood = GraphNeighborhood("A", listOf(RelatedEntity("B", listOf(viaProp)))),
         )
-        val router = RetrievalRouter(store, GraphQuery(store, contextId), contextId)
+        val router = RetrievalRouter(store, GraphQuery(store), contextId)
 
         val result = router.retrieve(DiscoveryQuery(mode = RetrievalMode.GRAPH_WALK, entityId = "A"))
 

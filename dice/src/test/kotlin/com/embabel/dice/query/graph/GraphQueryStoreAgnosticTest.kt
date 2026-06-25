@@ -50,6 +50,18 @@ class GraphQueryStoreAgnosticTest {
             confidence = 0.9,
         )
 
+    private fun edge(id: String, ctx: ContextId, a: String, b: String): Proposition =
+        Proposition(
+            id = id,
+            contextId = ctx,
+            text = "$a relates to $b",
+            mentions = listOf(
+                EntityMention(span = a, type = "Entity", resolvedId = a, role = MentionRole.SUBJECT),
+                EntityMention(span = b, type = "Entity", resolvedId = b, role = MentionRole.OBJECT),
+            ),
+            confidence = 0.9,
+        )
+
     /** Implements ONLY the base persistence port — no entity-axis graph capability. */
     private open class BaseOnlyStore : PropositionStore {
         private val store = mutableMapOf<String, Proposition>()
@@ -77,6 +89,41 @@ class GraphQueryStoreAgnosticTest {
             listOf(GraphPath(listOf(entityIdA, entityIdB), emptyList()))
     }
 
+    /** Native methods deliberately ignore context, as the current capability SPI gives them none. */
+    private class ContextBlindNativeGraphStore(
+        private val foreign: Proposition,
+    ) : BaseOnlyStore(), GraphQueryCapable {
+        var neighborhoodCalls = 0
+            private set
+        var pathCalls = 0
+            private set
+        var whyCalls = 0
+            private set
+
+        override fun neighborhood(entityId: String, depth: Int): GraphNeighborhood {
+            neighborhoodCalls++
+            return GraphNeighborhood(entityId, listOf(RelatedEntity("FOREIGN", listOf(foreign))))
+        }
+
+        override fun pathBetween(entityIdA: String, entityIdB: String): List<GraphPath> {
+            pathCalls++
+            return listOf(GraphPath(listOf(entityIdA, "FOREIGN", entityIdB), listOf(foreign)))
+        }
+
+        override fun whyExplain(propositionId: String): PropositionLineage? {
+            whyCalls++
+            return PropositionLineage(
+                proposition = foreign,
+                provenanceEntries = emptyList(),
+                groundingChunkIds = emptyList(),
+                sources = emptyList(),
+                reinforceCount = foreign.reinforceCount,
+                status = foreign.status,
+                temporal = foreign.temporal,
+            )
+        }
+    }
+
     @Test
     fun `base-only store degrades to empty without throwing`() {
         val store = BaseOnlyStore().apply { save(proposition("p1")) }
@@ -100,7 +147,7 @@ class GraphQueryStoreAgnosticTest {
 
     @Test
     fun `native graph store routes to the override sentinel`() {
-        val gq = GraphQuery(NativeGraphStore(), contextId)
+        val gq = GraphQuery(NativeGraphStore())
 
         assertTrue(gq.supportsNativeGraph, "a native store declares the graph capability")
         assertEquals(
@@ -113,5 +160,28 @@ class GraphQueryStoreAgnosticTest {
             gq.pathBetween("A", "B").single().entityIds,
             "the facade routes pathBetween to the native override",
         )
+    }
+
+    @Test
+    fun `context-bound graph query uses the scoped portable path instead of context-blind native methods`() {
+        val ctxA = ContextId("ctxA")
+        val ctxB = ContextId("ctxB")
+        val foreign = edge("foreign", ctxB, "A", "FOREIGN")
+        val store = ContextBlindNativeGraphStore(foreign).apply {
+            save(edge("local", ctxA, "A", "B"))
+            save(foreign)
+        }
+        val gq = GraphQuery(store, ctxA)
+
+        val neighborhood = gq.neighborhood("A")
+        val paths = gq.pathBetween("A", "B")
+        val foreignLineage = gq.whyExplain("foreign")
+
+        assertEquals(listOf("B"), neighborhood.neighbours.map { it.entityId })
+        assertEquals(listOf("A", "B"), paths.single().entityIds)
+        assertEquals(null, foreignLineage, "a scoped query must not explain a foreign-context proposition")
+        assertEquals(0, store.neighborhoodCalls, "scoped neighborhood must not use the native context-blind method")
+        assertEquals(0, store.pathCalls, "scoped pathBetween must not use the native context-blind method")
+        assertEquals(0, store.whyCalls, "scoped whyExplain must not use the native context-blind method")
     }
 }
