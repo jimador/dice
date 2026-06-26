@@ -109,8 +109,11 @@ class ProvenancePopulationE2ETest {
         val readBack = store.query(PropositionQuery.forContextId(context.contextId))
         assertTrue(readBack.isNotEmpty(), "propositions are persisted")
         assertTrue(
-            readBack.all { it.provenanceEntries.any { e -> e.locator == locator } },
-            "every persisted proposition keeps its source locator after read-back",
+            // Exactly one entry, carrying this source — asserting `single()` (not `any`) also catches
+            // a regression that double-stamps a proposition (e.g. the content-hash fallback alongside
+            // the real locator).
+            readBack.all { it.provenanceEntries.size == 1 && it.provenanceEntries.single().locator == locator },
+            "every persisted proposition keeps exactly its source locator after read-back",
         )
     }
 

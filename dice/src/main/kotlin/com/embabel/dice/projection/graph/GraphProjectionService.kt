@@ -172,9 +172,13 @@ class GraphProjectionService(
     ): Boolean {
         if (persistenceResult.failedCount == 0) return false
         val failedRefs = persistenceResult.failedRelationshipRefs
-        if (failedRefs.isEmpty()) return true
-        val ref = relationship?.edgeRef ?: return true
-        return ref in failedRefs
+        val ref = relationship?.edgeRef
+        // When the persister attributes failures per edge and we know this edge's ref, decide precisely.
+        if (failedRefs.isNotEmpty() && ref != null) return ref in failedRefs
+        // No per-edge attribution (a persister that doesn't report refs, or a non-relationship
+        // projection): we can only be certain THIS item failed when the whole batch failed. A
+        // partial failure we can't attribute must not paint a succeeded edge as FAILED.
+        return persistenceResult.persistedCount == 0
     }
 
     private fun persistenceFailureReason(persistenceResult: RelationshipPersistenceResult): String =

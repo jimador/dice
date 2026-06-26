@@ -1085,6 +1085,34 @@ class PropositionReviserTest {
 
             assertEquals(1, result.revised.provenanceEntries.size, "the same entry is not duplicated")
         }
+
+        @Test
+        fun `reinforcing unions the provenance entries from both propositions`() {
+            val repository = TestPropositionRepository()
+            val locA = UriLocator("https://example.com/a")
+            val existing = createProposition("Alice is a developer")
+                .withProvenanceEntries(listOf(ProvenanceEntry(locA, chunkId = "chunk-a")))
+            repository.save(existing)
+
+            val locB = UriLocator("https://example.com/b")
+            val incoming = createProposition("Alice works as a software engineer")
+                .withProvenanceEntries(listOf(ProvenanceEntry(locB, chunkId = "chunk-b")))
+
+            // Drive the SIMILAR -> reinforce path directly, bypassing LLM classification, so this
+            // covers reinforceProposition's provenance union (the Merged tests cover only the merge path).
+            val result = realReviser().classifiedToResult(
+                incoming,
+                listOf(ClassifiedProposition(existing, PropositionRelation.SIMILAR, 0.9, "Related")),
+                repository,
+            )
+
+            assertTrue(result is RevisionResult.Reinforced, "a strong SIMILAR match reinforces")
+            val reinforced = (result as RevisionResult.Reinforced).revised
+            val locators = reinforced.provenanceEntries.map { it.locator }
+            assertTrue(locA in locators, "keeps the existing source")
+            assertTrue(locB in locators, "adds the reinforcing source")
+            assertEquals(2, reinforced.provenanceEntries.size)
+        }
     }
 
     private fun createProposition(

@@ -96,20 +96,17 @@ class SeededGraphNoDuplicateNodesIT {
             )
 
             // (3) Project a proposition whose subject/object resolve to the seeded ids.
-            service.projectAndPersist(
-                listOf(
-                    Proposition(
-                        id = "prop-1",
-                        contextId = contextId,
-                        text = "Rod knows Tom",
-                        mentions = listOf(
-                            EntityMention("Rod", "Person", resolvedId = ROD_ID, role = MentionRole.SUBJECT),
-                            EntityMention("Tom", "Person", resolvedId = TOM_ID, role = MentionRole.OBJECT),
-                        ),
-                        confidence = 0.95,
-                    ),
+            val rodKnowsTom = Proposition(
+                id = "prop-1",
+                contextId = contextId,
+                text = "Rod knows Tom",
+                mentions = listOf(
+                    EntityMention("Rod", "Person", resolvedId = ROD_ID, role = MentionRole.SUBJECT),
+                    EntityMention("Tom", "Person", resolvedId = TOM_ID, role = MentionRole.OBJECT),
                 ),
+                confidence = 0.95,
             )
+            service.projectAndPersist(listOf(rodKnowsTom))
 
             val after = countNodes(driver)
 
@@ -125,6 +122,21 @@ class SeededGraphNoDuplicateNodesIT {
             assertEquals(before, after, "projection must not mint duplicate nodes")
             assertEquals(2L, after, "exactly the two seeded nodes should remain")
             assertEquals(1L, countRelationships(driver), "the projected edge should be present")
+
+            // (5) Re-project the same proposition. The edge now exists in the live graph, so the
+            //     reconciler's findRelated proves it and ADOPTS instead of creating — and persistence
+            //     stays idempotent, minting no new node or duplicate edge.
+            service.projectAndPersist(listOf(rodKnowsTom))
+
+            assertTrue(
+                recordStore.all().any {
+                    it.lifecycle == ProjectionLifecycle.ADOPTED &&
+                        it.targetRef == "$ROD_ID-[KNOWS]->$TOM_ID"
+                },
+                "re-projecting an edge that already exists must be recorded as ADOPTED",
+            )
+            assertEquals(2L, countNodes(driver), "re-projection must not mint nodes")
+            assertEquals(1L, countRelationships(driver), "re-projection must not duplicate the edge")
         }
     }
 
@@ -169,6 +181,27 @@ class SeededGraphNoDuplicateNodesIT {
                 )
             }
             entity
+        }
+
+        // findRelated answers from the live graph: the targets of outgoing edges from the source.
+        // The reconciler uses this to decide whether the edge it is about to project already exists,
+        // so an edge created by a prior projection is correctly adopted rather than re-created.
+        every { repository.findRelated(any(), any(), any()) } answers {
+            val source = firstArg<RetrievableIdentifier>()
+            driver.session().use { session ->
+                session.run(
+                    "MATCH (a {id: \$source})-[:RELATED]->(b) RETURN b.id AS id, labels(b) AS labels, b.name AS name",
+                    mapOf<String, Any>("source" to source.id),
+                ).list { record ->
+                    SimpleNamedEntityData(
+                        id = record["id"].asString(),
+                        name = record["name"].asString(record["id"].asString()),
+                        description = "",
+                        labels = record["labels"].asList { it.asString() }.toSet(),
+                        properties = emptyMap(),
+                    ) as NamedEntityData
+                }
+            }
         }
 
         every { repository.mergeRelationship(any(), any(), any()) } answers {

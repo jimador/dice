@@ -143,6 +143,55 @@ class GraphProjectionServiceLineageTest {
     }
 
     @Test
+    fun `in a partial-failure batch only the attributed edge is FAILED`() {
+        val pOk = proposition("p-ok")
+        val pBad = proposition("p-bad")
+        val edgeOk = ProjectedRelationship("node-1", "node-2", "KNOWS", 1.0, sourcePropositionIds = listOf(pOk.id))
+        val edgeBad = ProjectedRelationship("node-3", "node-4", "KNOWS", 1.0, sourcePropositionIds = listOf(pBad.id))
+        val results = ProjectionResults(listOf(ProjectionSuccess(pOk, edgeOk), ProjectionSuccess(pBad, edgeBad)))
+        val persistence = RelationshipPersistenceResult(
+            persistedCount = 1,
+            failedCount = 1,
+            errors = listOf("merge failed for ${edgeBad.edgeRef}"),
+            persistedRelationshipRefs = setOf(edgeOk.edgeRef),
+            failedRelationshipRefs = setOf(edgeBad.edgeRef),
+        )
+
+        every { mockProjector.projectAll(listOf(pOk, pBad), mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
+
+        val store = InMemoryProjectionRecordStore()
+        GraphProjectionService(mockProjector, mockPersister, mockSchema, store).projectAndPersist(listOf(pOk, pBad))
+
+        val byProposition = store.all().associateBy { it.propositionId }
+        assertEquals(ProjectionLifecycle.PROJECTED, byProposition.getValue("p-ok").lifecycle)
+        assertEquals(ProjectionLifecycle.FAILED, byProposition.getValue("p-bad").lifecycle)
+    }
+
+    @Test
+    fun `a partial failure the persister cannot attribute does not paint a succeeded edge FAILED`() {
+        val pOk = proposition("p-ok")
+        val pBad = proposition("p-bad")
+        val edgeOk = ProjectedRelationship("node-1", "node-2", "KNOWS", 1.0, sourcePropositionIds = listOf(pOk.id))
+        val edgeBad = ProjectedRelationship("node-3", "node-4", "KNOWS", 1.0, sourcePropositionIds = listOf(pBad.id))
+        val results = ProjectionResults(listOf(ProjectionSuccess(pOk, edgeOk), ProjectionSuccess(pBad, edgeBad)))
+        // failedCount > 0 but no per-edge refs: the persister can't say which edge failed. With the
+        // batch only partially failed, we must not invent a FAILED lifecycle for a succeeded edge.
+        val persistence = RelationshipPersistenceResult(persistedCount = 1, failedCount = 1, errors = listOf("one failed"))
+
+        every { mockProjector.projectAll(listOf(pOk, pBad), mockSchema) } returns results
+        every { mockPersister.persist(results) } returns persistence
+
+        val store = InMemoryProjectionRecordStore()
+        GraphProjectionService(mockProjector, mockPersister, mockSchema, store).projectAndPersist(listOf(pOk, pBad))
+
+        assertTrue(
+            store.all().none { it.lifecycle == ProjectionLifecycle.FAILED },
+            "an unattributable partial failure must not mark a succeeded edge FAILED",
+        )
+    }
+
+    @Test
     fun `with no store the returned pair is unchanged and nothing is recorded`() {
         val propositions = listOf<Proposition>()
         val results = ProjectionResults<ProjectedRelationship>(emptyList())
