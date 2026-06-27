@@ -24,8 +24,14 @@ import com.embabel.dice.common.SuggestedEntityResolution
 import com.embabel.dice.text2graph.*
 
 /**
- * Always create a new entity.
- * Not useful in production
+ * Unconditionally mints a fresh [NewEntity] for every suggestion.
+ *
+ * Because it never consults any repository, the IDs it mints will never match
+ * existing graph nodes — every mention becomes a brand-new entity. This makes it
+ * suitable only for development, tests, and one-off seeding of an empty store.
+ *
+ * For any flow where mentions must be matched against already-persisted entities
+ * (i.e. anything resembling production), use [EscalatingEntityResolver] instead.
  */
 object AlwaysCreateEntityResolver : EntityResolver {
 

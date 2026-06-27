@@ -25,6 +25,12 @@ import com.embabel.dice.proposition.Proposition
 interface ProjectionPolicy {
 
     /**
+     * The minimum confidence this policy requires. Exposed so a rejection explanation can quote the
+     * actual threshold in play rather than a hardcoded guess. Defaults to 0.85.
+     */
+    val confidenceThreshold: Double get() = 0.85
+
+    /**
      * Determine if the given proposition should be projected.
      * @param proposition The proposition to evaluate
      * @return true if the proposition meets projection criteria
@@ -39,7 +45,7 @@ interface ProjectionPolicy {
  * @property requireFullResolution If true, all entity mentions must be resolved (default true)
  */
 class DefaultProjectionPolicy(
-    private val confidenceThreshold: Double = 0.85,
+    override val confidenceThreshold: Double = 0.85,
     private val requireFullResolution: Boolean = true,
 ) : ProjectionPolicy {
 
@@ -61,7 +67,7 @@ class DefaultProjectionPolicy(
  * @property confidenceThreshold Minimum confidence required (default 0.7)
  */
 class LenientProjectionPolicy(
-    private val confidenceThreshold: Double = 0.7,
+    override val confidenceThreshold: Double = 0.7,
 ) : ProjectionPolicy {
 
     override fun shouldProject(proposition: Proposition): Boolean {

@@ -16,12 +16,13 @@
 package com.embabel.dice.projection.lineage
 
 /**
- * Store of [ProjectionRecord]s: an inverse index of which propositions projected
- * to which targets.
+ * Store of [ProjectionRecord]s — the inverse index of "what projected where".
  *
- * The query methods are defined in terms of [all], so an implementation need only
- * provide [record] and [all]. Backing stores may be in-memory, graph-backed, or
- * relational.
+ * Implementations may be in-memory, graph-backed, or relational. The default
+ * query methods are expressed in terms of [all] purely as a fallback for trivial
+ * in-memory stores. A durable store MUST override each finder with a scoped query
+ * (e.g. a parameterized `MATCH`) so a single-key lookup never loads the whole table
+ * into memory — the SPI default is not an acceptable data-access path for a database.
  */
 interface ProjectionRecordStore {
 
@@ -44,11 +45,21 @@ interface ProjectionRecordStore {
     /**
      * Find all records for a given target.
      *
-     * @param target The projection target (e.g. "graph")
+     * @param target The projection target (e.g. "neo4j")
      * @return records whose [ProjectionRecord.target] matches
      */
     fun findByTarget(target: String): List<ProjectionRecord> =
         all().filter { it.target == target }
+
+    /**
+     * Find all records for propositions in a given context. Used to scope projection-health summaries
+     * so one context never sees another's lineage.
+     *
+     * @param contextId The context the projected propositions belong to
+     * @return records whose [ProjectionRecord.contextId] matches
+     */
+    fun findByContext(contextId: String): List<ProjectionRecord> =
+        all().filter { it.contextId == contextId }
 
     /**
      * Find all records produced by a given run.
@@ -60,12 +71,36 @@ interface ProjectionRecordStore {
         all().filter { it.runId == runId }
 
     /**
+     * Trace from a produced/adopted artifact back to the projection records that
+     * reference it. Starting from a target artifact reference (e.g. a graph node ID),
+     * this returns every record whose [ProjectionRecord.targetRef] matches, across all
+     * lifecycles — so a reviewer can see whether the artifact was created (PROJECTED),
+     * adopted/aligned (ADOPTED), skipped, failed, or has gone stale.
+     *
+     * @param targetRef Reference to the produced/adopted artifact in the target
+     * @return records whose [ProjectionRecord.targetRef] matches
+     */
+    fun findByTargetRef(targetRef: String): List<ProjectionRecord> =
+        all().filter { it.targetRef == targetRef }
+
+    /**
      * Find all records currently in the [ProjectionLifecycle.STALE] state.
      *
      * @return records whose lifecycle is STALE
      */
     fun findStale(): List<ProjectionRecord> =
         all().filter { it.lifecycle == ProjectionLifecycle.STALE }
+
+    /**
+     * Marks every record for the given proposition as [ProjectionLifecycle.STALE].
+     *
+     * Defaults to a no-op returning 0. Implementations that hold mutable state
+     * should override this to replace each matching record with a stale copy.
+     *
+     * @param propositionId ID of the proposition whose records should go stale
+     * @return the number of records transitioned to STALE
+     */
+    fun markStaleByProposition(propositionId: String): Int = 0
 
     /**
      * @return all records held by this store

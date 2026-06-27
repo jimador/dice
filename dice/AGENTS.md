@@ -18,8 +18,9 @@ Kotlin 2.1.10, Java 21. `embabel-agent-api` and `embabel-agent-rag-core` are `pr
 
 **`PropositionRepository`** (`com.embabel.dice.proposition.PropositionRepository`) — extends `PropositionStore` with opt-in capability fragments:
 - `VectorSearchCapable` — `findSimilarWithScores`, `findClusters`
-- `GraphTraversalCapable` — traversal helpers
+- `GraphTraversalCapable` — traversal helpers over the proposition abstraction hierarchy
 - `TemporalQueryCapable` — bitemporal queries
+- `GraphQueryCapable` — native neighbourhood, path-between, and why-explain lineage queries over the entity-relationship graph; also declares `honorsAuthorityFilter` so the portable graph facade can route authority-filtered traversals to the native backend rather than falling back to proposition-walk
 
 `CoreSearchOperations` is a separate RAG bridge (vector + text search), not a capability fragment a backend opts into.
 
@@ -71,9 +72,11 @@ These map onto the lifecycle in [proposition-lifecycle](../docs/design/propositi
 | `text2graph` | `KnowledgeGraphBuilder`, `SourceAnalyzer`, `LlmSourceAnalyzer`, `MultiPassKnowledgeGraphBuilder`, merge policies, relationship resolution |
 | `provenance` | `ProvenanceEntry`, `SourceLocator`, `UriLocator` |
 | `query.oracle` | `Oracle`, `LlmOracle`, `PrologTools`, `ToolOracle` |
+| `query.graph` | `GraphQuery`, `GraphNeighborhood`, `GraphPath`, `PropositionLineage` — neighbourhood/path/lineage retrieval over the graph |
+| `query.discovery` | `RetrievalRouter`, `DiscoveryQuery`, `RetrievalMode`, discovery DTOs — mode-routed retrieval entry point |
 | `temporal` | `TemporalMetadata` — bitemporal valid/observed windows, explicit retraction |
-| `agent` | `Memory`, `MemoryRetriever` (agent-facing view), `ProvenanceResolver` |
-| `web.rest` | `PropositionPipelineController`, `MemoryController`, API key security — optional, activated by `spring-webmvc` |
+| `agent` | `Memory`, `MemoryRetriever` (agent-facing view), `ProvenanceResolver`; **`DiscoveryTools`** — `@LlmTool`-annotated tools wrapping `RetrievalRouter` (query propositions, graph path, why-explain, projection health, collector dry-run) with context baked in at construction so an agent can't cross context boundaries; **`GraphQueryTools`** — `@LlmTool`-annotated tools wrapping the `GraphQuery` facade (entity neighbourhood, path between entities, why-explain) |
+| `web.rest` | `PropositionPipelineController`, `MemoryController`, **`DiscoveryController`** — REST surface for discovery operations (`/api/v1/contexts/{contextId}/discovery`; routes query, path, why, projection health, and collector dry-run; context comes from the URL path only), API key security — optional, activated by `spring-webmvc` |
 | `operations` | `PropositionAbstractor`, `PropositionContraster` — higher-level proposition management |
 | `operations.consolidation` | The dream-loop steps as composable passes: `ConsolidationPass`/`ConsolidationPassResult`, `SessionConsolidationPass`, `AbstractionPass`, `ContradictionResolutionPass`, `DecaySweepPass` |
 

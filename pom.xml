@@ -26,6 +26,9 @@
         <module>dice</module>
         <module>dice-storage</module>
         <module>dice-storage-autoconfigure</module>
+        <module>dice-report</module>
+        <module>dice-ingestion</module>
+        <module>dice-integration-tests</module>
     </modules>
 
     <properties>
@@ -65,6 +68,16 @@
             <dependency>
                 <groupId>com.embabel.dice</groupId>
                 <artifactId>dice-storage</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.embabel.dice</groupId>
+                <artifactId>dice-ingestion</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.embabel.dice</groupId>
+                <artifactId>dice-report</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

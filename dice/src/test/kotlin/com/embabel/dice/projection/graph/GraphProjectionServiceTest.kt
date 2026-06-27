@@ -32,25 +32,25 @@ class GraphProjectionServiceTest {
     private val mockSchema = DataDictionary.fromDomainTypes("test", emptyList())
 
     @Test
-    fun `projectAndPersist delegates to persister`() {
+    fun `projectAndPersist projects then persists relationships`() {
         val propositions = listOf<Proposition>()
         val projectionResults = ProjectionResults<ProjectedRelationship>(emptyList())
         val persistenceResult = RelationshipPersistenceResult(
             persistedCount = 0,
             failedCount = 0,
         )
-        val expectedPair = Pair(projectionResults, persistenceResult)
 
-        every {
-            mockPersister.projectAndPersist(propositions, mockProjector, mockSchema)
-        } returns expectedPair
+        every { mockProjector.projectAll(propositions, mockSchema) } returns projectionResults
+        every { mockPersister.persist(projectionResults) } returns persistenceResult
 
         val service = GraphProjectionService(mockProjector, mockPersister, mockSchema)
         val result = service.projectAndPersist(propositions)
 
-        assertSame(expectedPair, result)
+        assertSame(projectionResults, result.first)
+        assertSame(persistenceResult, result.second)
         verify(exactly = 1) {
-            mockPersister.projectAndPersist(propositions, mockProjector, mockSchema)
+            mockProjector.projectAll(propositions, mockSchema)
+            mockPersister.persist(projectionResults)
         }
     }
 
@@ -63,9 +63,8 @@ class GraphProjectionServiceTest {
             failedCount = 0,
         )
 
-        every {
-            mockPersister.projectAndPersist(propositions, mockProjector, mockSchema)
-        } returns Pair(projectionResults, persistenceResult)
+        every { mockProjector.projectAll(propositions, mockSchema) } returns projectionResults
+        every { mockPersister.persist(projectionResults) } returns persistenceResult
 
         val service = GraphProjectionService.create(mockProjector, mockPersister, mockSchema)
         val result = service.projectAndPersist(propositions)

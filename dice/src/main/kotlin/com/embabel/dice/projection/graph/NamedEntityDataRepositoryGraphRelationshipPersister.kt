@@ -19,32 +19,35 @@ import com.embabel.agent.core.DataDictionary
 import com.embabel.agent.rag.service.NamedEntityDataRepository
 import com.embabel.agent.rag.service.RelationshipData
 import com.embabel.agent.rag.service.RetrievableIdentifier
+import com.embabel.dice.spi.AuthorityResolver
+import com.embabel.dice.spi.StructuralAuthorityResolver
 import com.embabel.dice.proposition.ProjectionResults
 import com.embabel.dice.proposition.Proposition
 import org.slf4j.LoggerFactory
 
 /**
- * Implementation of [GraphRelationshipPersister] that uses [com.embabel.agent.rag.service.NamedEntityDataRepository].
+ * Persists projected graph relationships via [NamedEntityDataRepository].
  *
- * Converts projected relationships to the repository's relationship format and
- * stores them in the underlying graph database.
+ * Converts each [ProjectedRelationship] to the repository's relationship format
+ * and writes it to the underlying graph database.
  *
- * Example:
+ * The [authorityResolver] stamps the strongest authority across the source propositions onto
+ * each edge written by [synthesizeAndUpdateDescriptions], so authority is preserved through
+ * the description-synthesis re-persist cycle and not silently dropped.
+ *
  * ```kotlin
  * val persister = NamedEntityDataRepositoryGraphRelationshipPersister(repository)
- *
- * // Project propositions to relationships
- * val results = graphProjector.projectAll(propositions, schema)
- *
- * // Persist the projected relationships
- * val persistenceResult = persister.persist(results)
- * println("Persisted ${persistenceResult.persistedCount} relationships")
+ * val result = persister.persist(graphProjector.projectAll(propositions, schema))
+ * println("Persisted ${result.persistedCount} relationships")
  * ```
  *
- * @param repository The repository to persist relationships to
+ * @param repository the graph repository to write relationships into
+ * @param authorityResolver resolves the source authority to stamp on synthesized edges;
+ *   defaults to [StructuralAuthorityResolver]
  */
-class NamedEntityDataRepositoryGraphRelationshipPersister(
+class NamedEntityDataRepositoryGraphRelationshipPersister @JvmOverloads constructor(
     private val repository: NamedEntityDataRepository,
+    private val authorityResolver: AuthorityResolver = StructuralAuthorityResolver(),
 ) : GraphRelationshipPersister {
 
     private val logger = LoggerFactory.getLogger(NamedEntityDataRepositoryGraphRelationshipPersister::class.java)
@@ -57,14 +60,18 @@ class NamedEntityDataRepositoryGraphRelationshipPersister(
         var persistedCount = 0
         var failedCount = 0
         val errors = mutableListOf<String>()
+        val persistedRefs = mutableSetOf<String>()
+        val failedRefs = mutableSetOf<String>()
 
         for (relationship in relationships) {
             try {
                 persistRelationship(relationship)
                 persistedCount++
+                persistedRefs.add(relationship.edgeRef)
                 logger.info("Persisted relationship: {}", relationship.infoString(true))
             } catch (e: Exception) {
                 failedCount++
+                failedRefs.add(relationship.edgeRef)
                 val errorMsg = "Failed to persist ${relationship.infoString(false)}: ${e.message}"
                 errors.add(errorMsg)
                 logger.warn(errorMsg, e)
@@ -72,13 +79,37 @@ class NamedEntityDataRepositoryGraphRelationshipPersister(
         }
 
         logger.info("Persisted {}/{} relationships", persistedCount, relationships.size)
-        return RelationshipPersistenceResult(persistedCount, failedCount, errors)
+        return RelationshipPersistenceResult(
+            persistedCount = persistedCount,
+            failedCount = failedCount,
+            errors = errors,
+            persistedRelationshipRefs = persistedRefs,
+            failedRelationshipRefs = failedRefs,
+        )
     }
 
+    /**
+     * Persists a single projected relationship to the graph.
+     *
+     * Re-saves each resolved entity verbatim (exactly as returned by the repository)
+     * before merging the edge, so multi-label nodes like `(:Person:User)` materialise
+     * correctly — the [RetrievableIdentifier] edge endpoint only carries one type string,
+     * so the re-save is how the full label set gets written.
+     *
+     * The three repository calls (source save, target save, mergeRelationship) are not
+     * transactional within this module. If you need all-or-nothing semantics, wrap this
+     * call in a `@Transactional` boundary in your consuming Spring context.
+     */
     override fun persistRelationship(relationship: ProjectedRelationship) {
         // Create entity identifiers - type is determined from the relationship context
         val sourceEntity = repository.findById(relationship.sourceId)
         val targetEntity = repository.findById(relationship.targetId)
+
+        // Re-save each resolved entity exactly as fetched so its full label set
+        // (e.g. (:Person:User)) materializes regardless of save ordering. Passing
+        // the fetched object verbatim keeps the save additive/non-destructive.
+        sourceEntity?.let { repository.save(it) }
+        targetEntity?.let { repository.save(it) }
 
         val sourceType = sourceEntity?.labels()?.firstOrNull() ?: "Entity"
         val targetType = targetEntity?.labels()?.firstOrNull() ?: "Entity"
@@ -102,6 +133,9 @@ class NamedEntityDataRepositoryGraphRelationshipPersister(
             if (relationship.sourcePropositionIds.isNotEmpty()) {
                 put("sourcePropositions", relationship.sourcePropositionIds)
             }
+            // Carry the source authority onto the edge so downstream queries can tell a
+            // strongly-grounded relationship apart from a weak structural one.
+            relationship.authority?.let { put("authority", it.name) }
         }
 
         val relationshipData = RelationshipData(
@@ -129,8 +163,11 @@ class NamedEntityDataRepositoryGraphRelationshipPersister(
         var persistedCount = 0
         var failedCount = 0
         val errors = mutableListOf<String>()
+        val persistedRefs = mutableSetOf<String>()
+        val failedRefs = mutableSetOf<String>()
 
         for (pair in entityPairs) {
+            val relationshipRef = "${pair.sourceId}-[${pair.relationshipType}]->${pair.targetId}"
             try {
                 val result = synthesizer.synthesize(
                     SynthesisRequest(
@@ -148,6 +185,13 @@ class NamedEntityDataRepositoryGraphRelationshipPersister(
                     continue
                 }
 
+                // Resolve the strongest authority across the source propositions so the
+                // synthesized description re-persist carries the same grounding stamp as the
+                // original projected edge — not a null that silently downgrades it.
+                val pairAuthority = pair.propositions
+                    .map { authorityResolver.resolve(it) }
+                    .minByOrNull { it.ordinal }
+
                 val relationship = ProjectedRelationship(
                     sourceId = pair.sourceId,
                     targetId = pair.targetId,
@@ -155,11 +199,14 @@ class NamedEntityDataRepositoryGraphRelationshipPersister(
                     confidence = result.confidence,
                     description = result.description,
                     sourcePropositionIds = result.sourcePropositionIds,
+                    authority = pairAuthority,
                 )
                 persistRelationship(relationship)
                 persistedCount++
+                persistedRefs.add(relationship.edgeRef)
             } catch (e: Exception) {
                 failedCount++
+                failedRefs.add(relationshipRef)
                 val errorMsg = "Failed to synthesize description for ${pair.sourceName} -> ${pair.targetName}: ${e.message}"
                 errors.add(errorMsg)
                 logger.warn(errorMsg, e)
@@ -167,6 +214,12 @@ class NamedEntityDataRepositoryGraphRelationshipPersister(
         }
 
         logger.info("Synthesized and updated {}/{} relationship descriptions", persistedCount, entityPairs.size)
-        return RelationshipPersistenceResult(persistedCount, failedCount, errors)
+        return RelationshipPersistenceResult(
+            persistedCount = persistedCount,
+            failedCount = failedCount,
+            errors = errors,
+            persistedRelationshipRefs = persistedRefs,
+            failedRelationshipRefs = failedRefs,
+        )
     }
 }

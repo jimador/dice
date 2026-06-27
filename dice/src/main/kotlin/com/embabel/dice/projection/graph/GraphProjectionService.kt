@@ -16,40 +16,175 @@
 package com.embabel.dice.projection.graph
 
 import com.embabel.agent.core.DataDictionary
+import com.embabel.dice.projection.lineage.ReconciliationDecision
+import com.embabel.dice.projection.lineage.Reconciler
+import com.embabel.dice.projection.lineage.AlwaysCreateReconciler
+import com.embabel.dice.projection.lineage.ProjectionLifecycle
+import com.embabel.dice.projection.lineage.ProjectionRecord
+import com.embabel.dice.projection.lineage.ProjectionRecordStore
+import com.embabel.dice.proposition.ProjectionFailed
 import com.embabel.dice.proposition.ProjectionResults
+import com.embabel.dice.proposition.ProjectionSkipped
+import com.embabel.dice.proposition.ProjectionSuccess
 import com.embabel.dice.proposition.Proposition
+import org.slf4j.LoggerFactory
+import java.util.UUID
 
 /**
- * Facade that bundles a [GraphProjector], [GraphRelationshipPersister], and [DataDictionary]
- * to simplify the common project-and-persist workflow.
+ * Bundles a [GraphProjector], [GraphRelationshipPersister], and [DataDictionary] together
+ * so you can project propositions to graph relationships and persist them in one call.
  *
- * @param graphProjector The projector to use for converting propositions to relationships
- * @param persister The persister to use for storing projected relationships
- * @param schema The data dictionary for relationship validation
+ * @param graphProjector converts propositions to relationships
+ * @param persister writes those relationships to the graph
+ * @param schema data dictionary used for relationship validation
+ * @param recordStore optional lineage store; when supplied, one [ProjectionRecord] is
+ *   written per result (PROJECTED / ADOPTED / SKIPPED / FAILED). Nothing is recorded
+ *   when null.
+ * @param reconciler decides per successful projection whether to create a new artifact
+ *   (PROJECTED) or align with an existing one (ADOPTED). Defaults to [AlwaysCreateReconciler].
+ *   Only consulted when a [recordStore] is present. Node-level de-duplication on the
+ *   graph side is a planned follow-up.
  */
 class GraphProjectionService(
     private val graphProjector: GraphProjector,
     private val persister: GraphRelationshipPersister,
     private val schema: DataDictionary,
+    private val recordStore: ProjectionRecordStore? = null,
+    private val reconciler: Reconciler = AlwaysCreateReconciler,
 ) {
+
+    private val logger = LoggerFactory.getLogger(GraphProjectionService::class.java)
 
     companion object {
         @JvmStatic
+        @JvmOverloads
         fun create(
             graphProjector: GraphProjector,
             persister: GraphRelationshipPersister,
             schema: DataDictionary,
-        ): GraphProjectionService = GraphProjectionService(graphProjector, persister, schema)
+            recordStore: ProjectionRecordStore? = null,
+            reconciler: Reconciler = AlwaysCreateReconciler,
+        ): GraphProjectionService =
+            GraphProjectionService(graphProjector, persister, schema, recordStore, reconciler)
     }
 
     /**
-     * Project propositions to relationships and persist them in one operation.
+     * Projects the given propositions to graph relationships and persists them.
+     * When a [recordStore] is configured, one [ProjectionRecord] is emitted per result,
+     * all sharing a single run ID for the batch.
      *
-     * @param propositions The propositions to project and persist
-     * @return Pair of projection results and persistence results
+     * @param propositions propositions to project and persist
+     * @return projection results paired with persistence results
      */
     fun projectAndPersist(
         propositions: List<Proposition>,
-    ): Pair<ProjectionResults<ProjectedRelationship>, RelationshipPersistenceResult> =
-        persister.projectAndPersist(propositions, graphProjector, schema)
+    ): Pair<ProjectionResults<ProjectedRelationship>, RelationshipPersistenceResult> {
+        val projectionResults = graphProjector.projectAll(propositions, schema)
+
+        // Reconcile BEFORE persisting. A repository-backed reconciler decides "new vs. existing"
+        // against the concrete projected edge; if we persisted first, it would find the just-written
+        // relationship and every successful projection would look ADOPTED.
+        val store = recordStore
+        val decisions: Map<String, ReconciliationDecision> =
+            if (store != null) {
+                projectionResults.results
+                    .filterIsInstance<ProjectionSuccess<ProjectedRelationship>>()
+                    .associate { it.proposition.id to reconciler.reconcile(it.proposition, "neo4j", it.projected) }
+            } else {
+                emptyMap()
+            }
+
+        val persistenceResult = persister.persist(projectionResults)
+        val pair = Pair(projectionResults, persistenceResult)
+        if (store != null) {
+            val runId = UUID.randomUUID().toString()
+            pair.first.results.forEach { result ->
+                val (lifecycle, targetRef, reason) = when (result) {
+                    is ProjectionSuccess -> {
+                        val relationship = result.projected as? ProjectedRelationship
+                        if (persistenceFailed(relationship, persistenceResult)) {
+                            Triple(
+                                ProjectionLifecycle.FAILED,
+                                null,
+                                persistenceFailureReason(persistenceResult),
+                            )
+                        } else {
+                            when (val decision = decisions[result.proposition.id] ?: ReconciliationDecision.CreateNew) {
+                                is ReconciliationDecision.CreateNew -> Triple(
+                                    ProjectionLifecycle.PROJECTED,
+                                    // Reference the produced edge, not just its source node, so findByTargetRef
+                                    // resolves to this specific relationship rather than every edge off the source.
+                                    relationship?.edgeRef,
+                                    null,
+                                )
+
+                                is ReconciliationDecision.Adopt -> Triple(
+                                    ProjectionLifecycle.ADOPTED,
+                                    decision.targetRef,
+                                    "adopted existing artifact",
+                                )
+
+                                is ReconciliationDecision.Align -> Triple(
+                                    ProjectionLifecycle.ADOPTED,
+                                    decision.targetRef,
+                                    "aligned with existing artifact (node merge deferred)",
+                                )
+                            }
+                        }
+                    }
+
+                    is ProjectionSkipped -> Triple(
+                        ProjectionLifecycle.SKIPPED,
+                        null,
+                        result.structuredReason?.describe() ?: result.reason,
+                    )
+
+                    is ProjectionFailed -> Triple(
+                        ProjectionLifecycle.FAILED,
+                        null,
+                        result.structuredReason?.describe() ?: result.reason,
+                    )
+                }
+                // The graph side is already persisted above; a failure writing one lineage record
+                // must not abort the loop and drop the records for every remaining result. Isolate
+                // each write so a flaky record store loses at most the one row, not the whole trail.
+                runCatching {
+                    store.record(
+                        ProjectionRecord.of(
+                            propositionId = result.proposition.id,
+                            target = "neo4j",
+                            lifecycle = lifecycle,
+                            runId = runId,
+                            targetRef = targetRef,
+                            reason = reason,
+                            contextId = result.proposition.contextId.value,
+                        ),
+                    )
+                }.onFailure { logger.warn("Failed to record projection lineage for {}: {}", result.proposition.id, it.message) }
+            }
+        }
+        return pair
+    }
+
+    private fun persistenceFailed(
+        relationship: ProjectedRelationship?,
+        persistenceResult: RelationshipPersistenceResult,
+    ): Boolean {
+        if (persistenceResult.failedCount == 0) return false
+        val failedRefs = persistenceResult.failedRelationshipRefs
+        val ref = relationship?.edgeRef
+        // When the persister attributes failures per edge and we know this edge's ref, decide precisely.
+        if (failedRefs.isNotEmpty() && ref != null) return ref in failedRefs
+        // No per-edge attribution (a persister that doesn't report refs, or a non-relationship
+        // projection): we can only be certain THIS item failed when the whole batch failed. A
+        // partial failure we can't attribute must not paint a succeeded edge as FAILED.
+        return persistenceResult.persistedCount == 0
+    }
+
+    private fun persistenceFailureReason(persistenceResult: RelationshipPersistenceResult): String =
+        if (persistenceResult.errors.isEmpty()) {
+            "relationship persistence failed"
+        } else {
+            "relationship persistence failed: ${persistenceResult.errors.joinToString("; ")}"
+        }
 }

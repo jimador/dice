@@ -19,8 +19,10 @@ import com.embabel.agent.api.common.Ai
 import com.embabel.agent.core.AllowedRelationship
 import com.embabel.agent.core.DataDictionary
 import com.embabel.common.ai.model.LlmOptions
+import com.embabel.dice.spi.AuthorityResolver
 import com.embabel.dice.common.Relation
 import com.embabel.dice.common.Relations
+import com.embabel.dice.spi.StructuralAuthorityResolver
 import com.embabel.dice.proposition.MentionRole
 import com.embabel.dice.proposition.ProjectionFailed
 import com.embabel.dice.proposition.ProjectionResult
@@ -60,12 +62,14 @@ import org.slf4j.LoggerFactory
  * @param relations Relation predicates to include as candidate relationship types
  * @param policy Policy to filter propositions before projection
  * @param llmOptions LLM configuration
+ * @param authorityResolver Resolves the source authority stamped onto each projected edge
  */
 data class LlmGraphProjector(
     private val ai: Ai,
     private val relations: Relations = Relations.empty(),
     private val policy: ProjectionPolicy = DefaultProjectionPolicy(),
     private val llmOptions: LlmOptions = LlmOptions(),
+    private val authorityResolver: AuthorityResolver = StructuralAuthorityResolver(),
 ) : GraphProjector {
 
     companion object {
@@ -128,13 +132,19 @@ data class LlmGraphProjector(
     fun withLlmOptions(llmOptions: LlmOptions): LlmGraphProjector =
         copy(llmOptions = llmOptions)
 
+    /**
+     * Override the resolver that stamps each projected edge with its source authority.
+     */
+    fun withAuthorityResolver(authorityResolver: AuthorityResolver): LlmGraphProjector =
+        copy(authorityResolver = authorityResolver)
+
     override fun project(
         proposition: Proposition,
         schema: DataDictionary,
     ): ProjectionResult<ProjectedRelationship> {
         // Check policy first
         if (!policy.shouldProject(proposition)) {
-            val reason = buildPolicyRejectionReason(proposition)
+            val reason = proposition.policyRejectionReason(policy.confidenceThreshold)
             logger.debug("Proposition skipped by policy: {}", reason)
             return ProjectionSkipped(proposition, reason)
         }
@@ -174,15 +184,16 @@ data class LlmGraphProjector(
             return ProjectionFailed(proposition, classification.reasoning ?: "No relationship implied")
         }
 
-        // Find the source and target entity IDs
+        // Find the source and target entity IDs. The LLM's span is authoritative when it matches a
+        // mention, so try the span first and only fall back to role when no span matches. Doing both
+        // in one `find { span || role }` let an earlier role-matching mention win over a later mention
+        // the span actually named, silently producing a wrong-direction edge.
         val fromMention = proposition.mentions.find {
-            it.span.equals(classification.fromMentionSpan, ignoreCase = true) ||
-                it.role == MentionRole.SUBJECT
-        }
+            it.span.equals(classification.fromMentionSpan, ignoreCase = true)
+        } ?: proposition.mentions.find { it.role == MentionRole.SUBJECT }
         val toMention = proposition.mentions.find {
-            it.span.equals(classification.toMentionSpan, ignoreCase = true) ||
-                it.role == MentionRole.OBJECT
-        }
+            it.span.equals(classification.toMentionSpan, ignoreCase = true)
+        } ?: proposition.mentions.find { it.role == MentionRole.OBJECT }
 
         if (fromMention?.resolvedId == null || toMention?.resolvedId == null) {
             logger.debug("Could not resolve entity IDs for relationship")
@@ -212,6 +223,7 @@ data class LlmGraphProjector(
             decay = proposition.decay,
             description = proposition.text,
             sourcePropositionIds = listOf(proposition.id),
+            authority = authorityResolver.resolve(proposition),
         )
 
         logger.debug("Projected proposition to relationship: {}", relationship.infoString(true))
@@ -245,17 +257,6 @@ data class LlmGraphProjector(
             )
     }
 
-    private fun buildPolicyRejectionReason(proposition: Proposition): String {
-        val reasons = mutableListOf<String>()
-        if (proposition.confidence < 0.85) {
-            reasons.add("low confidence (${proposition.confidence})")
-        }
-        if (!proposition.isFullyResolved()) {
-            val unresolved = proposition.mentions.filter { it.resolvedId == null }.map { it.span }
-            reasons.add("unresolved entities: $unresolved")
-        }
-        return reasons.joinToString(", ").ifEmpty { "policy criteria not met" }
-    }
 }
 
 /**

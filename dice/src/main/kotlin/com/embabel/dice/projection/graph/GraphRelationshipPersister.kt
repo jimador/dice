@@ -24,11 +24,15 @@ import com.embabel.dice.proposition.Proposition
  * @property persistedCount Number of relationships successfully persisted
  * @property failedCount Number of relationships that failed to persist
  * @property errors List of error messages for failed persistences
+ * @property persistedRelationshipRefs Stable edge refs that were persisted, when the persister can report them
+ * @property failedRelationshipRefs Stable edge refs that failed to persist, when the persister can report them
  */
 data class RelationshipPersistenceResult(
     val persistedCount: Int,
     val failedCount: Int,
     val errors: List<String> = emptyList(),
+    val persistedRelationshipRefs: Set<String> = emptySet(),
+    val failedRelationshipRefs: Set<String> = emptySet(),
 ) {
     val totalAttempted: Int get() = persistedCount + failedCount
     val allSucceeded: Boolean get() = failedCount == 0

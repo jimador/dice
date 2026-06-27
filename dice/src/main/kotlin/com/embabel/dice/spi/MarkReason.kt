@@ -42,7 +42,11 @@ sealed interface MarkReason {
      * @property survivorId ID of the proposition that should be kept.
      */
     data class Duplicate(val survivorId: String) : MarkReason {
-        override val key: String = "duplicate"
+        override val key: String = RESERVED_KEY
+
+        companion object {
+            const val RESERVED_KEY = "duplicate"
+        }
     }
 
     /**
@@ -51,5 +55,15 @@ sealed interface MarkReason {
      * @property key Stable machine label supplied by the consumer.
      * @property description Human-readable explanation of the reason.
      */
-    data class Custom(override val key: String, val description: String) : MarkReason
+    data class Custom(override val key: String, val description: String) : MarkReason {
+        init {
+            require(key.isNotBlank()) { "Custom reason key must not be blank" }
+            // The persisted form keys a reason only by its `key`, so a Custom that reuses a built-in
+            // key would read back as that built-in (e.g. "duplicate" -> Duplicate with a blank
+            // survivorId). Reject the collision at construction instead of corrupting the round-trip.
+            require(key != Stale.key && key != Duplicate.RESERVED_KEY) {
+                "Custom reason key '$key' is reserved for a built-in MarkReason"
+            }
+        }
+    }
 }

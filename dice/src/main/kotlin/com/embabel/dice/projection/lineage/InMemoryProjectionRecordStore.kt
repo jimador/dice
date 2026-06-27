@@ -19,12 +19,11 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Thread-safe in-memory [ProjectionRecordStore].
+ * Thread-safe in-memory implementation of [ProjectionRecordStore].
  *
- * Records are append-only and returned in insertion order. Backed by a
- * [CopyOnWriteArrayList], so reads never block writes. Intended as a default
- * implementation for tests and lightweight usage; production deployments should
- * supply a persistent store.
+ * Intended as a default/stub for demos and tests. Records are append-only and
+ * returned in insertion order. Backed by a [CopyOnWriteArrayList] so reads never
+ * block writes.
  */
 class InMemoryProjectionRecordStore : ProjectionRecordStore {
 
@@ -39,6 +38,48 @@ class InMemoryProjectionRecordStore : ProjectionRecordStore {
             record.propositionId, record.target, record.lifecycle, record.runId,
         )
     }
+
+    /**
+     * Marks every record for [propositionId] that isn't already STALE as [ProjectionLifecycle.STALE],
+     * preserving insertion order and leaving all other records untouched.
+     *
+     * @param propositionId ID of the proposition whose records should go stale
+     * @return the number of records transitioned to STALE
+     */
+    override fun markStaleByProposition(propositionId: String): Int = synchronized(records) {
+        // The check (is this record non-STALE?) and the set must be atomic together: two concurrent
+        // calls for the same proposition could otherwise both observe the same non-STALE record and
+        // both count it, double-counting the transition (and racing the index write).
+        var count = 0
+        for (index in records.indices) {
+            val current = records[index]
+            if (current.propositionId == propositionId &&
+                current.lifecycle != ProjectionLifecycle.STALE
+            ) {
+                records[index] = current.copy(lifecycle = ProjectionLifecycle.STALE)
+                count++
+            }
+        }
+        count
+    }
+
+    override fun findByProposition(propositionId: String): List<ProjectionRecord> =
+        records.filter { it.propositionId == propositionId }
+
+    override fun findByTarget(target: String): List<ProjectionRecord> =
+        records.filter { it.target == target }
+
+    override fun findByContext(contextId: String): List<ProjectionRecord> =
+        records.filter { it.contextId == contextId }
+
+    override fun findByRun(runId: String): List<ProjectionRecord> =
+        records.filter { it.runId == runId }
+
+    override fun findByTargetRef(targetRef: String): List<ProjectionRecord> =
+        records.filter { it.targetRef == targetRef }
+
+    override fun findStale(): List<ProjectionRecord> =
+        records.filter { it.lifecycle == ProjectionLifecycle.STALE }
 
     override fun all(): List<ProjectionRecord> = records.toList()
 }
