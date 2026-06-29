@@ -45,19 +45,15 @@ data class DiceStoreProperties(
         var pruneStale: Boolean = false,
     )
 
-    /** The proposition embedding vector index (graph backend). */
+    /**
+     * The proposition embedding vector index (graph backend).
+     *
+     * Only [enabled] is configurable: the index's label, property, name, and similarity are fixed by
+     * the `@VectorIndex` annotation on `PropositionNode.embedding`, which the non-configurable
+     * `loadNearest` path reads. Exposing them here would let config drift away from that annotation
+     * and silently break vector search, so they live as constants on `DrivinePropositionRepository`.
+     */
     data class VectorIndex(
         var enabled: Boolean = true,
-        var label: String = "Proposition",
-        var property: String = "embedding",
-        var similarityFunction: String = "cosine",
-        /**
-         * Optional explicit index name. Leave it unset (null) to use the name derived from
-         * [label]/[property] — which is the canonical, annotation-bound name every search path
-         * expects. A non-null override is accepted only when it matches that derived name; a blank
-         * or divergent value is rejected at startup, since it would silently break vector search
-         * (see [DiceStorageAutoConfiguration.resolveVectorIndexName]).
-         */
-        var name: String? = null,
     )
 }

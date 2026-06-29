@@ -81,13 +81,13 @@ open class DiceStorageAutoConfiguration {
         persistenceManager: PersistenceManager,
         ai: Ai,
         transactionManager: PlatformTransactionManager,
-        properties: DiceStoreProperties,
     ): PropositionRepository {
-        val indexName = resolveVectorIndexName(properties.vectorIndex)
-        logger.info("Wiring graph proposition store (Drivine/Neo4j), vector index '{}'", indexName)
+        logger.info(
+            "Wiring graph proposition store (Drivine/Neo4j), vector index '{}'",
+            DrivinePropositionRepository.VECTOR_INDEX,
+        )
         return DrivinePropositionRepository(
             graphObjectManager, persistenceManager, ai.withDefaultEmbeddingService(), transactionManager,
-            vectorIndexName = indexName,
         )
     }
 
@@ -163,60 +163,26 @@ open class DiceStorageAutoConfiguration {
         havingValue = "true",
         matchIfMissing = true,
     )
-    open fun propositionVectorIndexSchema(ai: Ai, properties: DiceStoreProperties): SchemaCatalog {
+    open fun propositionVectorIndexSchema(ai: Ai): SchemaCatalog {
         val embeddingService = ai.withDefaultEmbeddingService()
-        val vi = properties.vectorIndex
-        val spec = VectorIndexSpec(
-            label = vi.label,
-            property = vi.property,
-            dimensions = embeddingService.dimensions,
-            similarity = SimilarityFunction.valueOf(vi.similarityFunction.uppercase()),
-            // Set the name explicitly to the resolved canonical name rather than passing the raw
-            // (nullable) override. This keeps the DDL index name byte-for-byte equal to what the
-            // repository's findClusters Cypher and the annotation-bound loadNearest path query.
-            name = resolveVectorIndexName(vi),
-        )
+        val spec = propositionVectorIndexSpec(embeddingService.dimensions)
         logger.info("Registering proposition vector index schema: {} (model={})", spec, embeddingService.name)
         return SchemaCatalog.of(spec).withVersion(embeddingService.name)
     }
 
     /**
-     * The one vector-index name every search path must share.
-     *
-     * Three independent paths resolve a vector-index name and they must all land on the same value
-     * or vector search silently returns nothing:
-     *  - `loadNearest` (memory panel + REST search) infers it from the `@VectorIndex` annotation on
-     *    `Proposition.embedding` — **not configurable**, always [DrivinePropositionRepository.VECTOR_INDEX].
-     *  - `findClusters` queries the name wired into [DrivinePropositionRepository].
-     *  - the schema (DDL) creates the index under [VectorIndexSpec]'s name.
-     *
-     * So the annotation-bound name is the canonical source of truth. We derive `{label}_{property}_vector`
-     * from config (matching how both Drivine's `defaultName()` and the annotation resolver derive it)
-     * and feed that single value to the other two paths. An explicit `name` override is accepted only
-     * when it equals the derived name; a blank or divergent value — or a label/property that re-derives
-     * to something other than the canonical name — is rejected here at startup rather than booting into
-     * a silently-broken search.
+     * The schema (DDL) for the proposition vector index. Its label, property, name, and similarity
+     * come straight from [DrivinePropositionRepository]'s canonical constants — the same identity the
+     * `@VectorIndex` annotation gives `loadNearest` and the `findClusters` Cypher — so all three paths
+     * target one index. Only [dimensions] varies, since it comes from the embedding model at runtime.
      */
-    internal fun resolveVectorIndexName(vi: DiceStoreProperties.VectorIndex): String {
-        val derived = "${vi.label}_${vi.property}_vector"
-        vi.name?.let { override ->
-            require(override.isNotBlank()) {
-                "embabel.dice.store.vector-index.name must not be blank; omit it to use the derived '$derived'."
-            }
-            require(override == derived) {
-                "embabel.dice.store.vector-index.name '$override' must equal the derived '$derived'. " +
-                    "The @VectorIndex annotation on Proposition.embedding is not configurable, so a " +
-                    "different name would silently break loadNearest (memory panel + REST search). " +
-                    "Omit the name to use the derived default."
-            }
-        }
-        require(derived == DrivinePropositionRepository.VECTOR_INDEX) {
-            "Configured vector index '$derived' (label='${vi.label}', property='${vi.property}') does not " +
-                "match the annotation-bound '${DrivinePropositionRepository.VECTOR_INDEX}' on " +
-                "Proposition.embedding, which is not configurable. Leave label/property at their defaults."
-        }
-        return derived
-    }
+    internal fun propositionVectorIndexSpec(dimensions: Int): VectorIndexSpec = VectorIndexSpec(
+        label = DrivinePropositionRepository.VECTOR_INDEX_LABEL,
+        property = DrivinePropositionRepository.VECTOR_INDEX_PROPERTY,
+        dimensions = dimensions,
+        similarity = SimilarityFunction.COSINE,
+        name = DrivinePropositionRepository.VECTOR_INDEX,
+    )
 
     // ---- In-memory backend (default) ----
 

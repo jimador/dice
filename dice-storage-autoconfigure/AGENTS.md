@@ -66,10 +66,12 @@ applying lifecycle transitions.
 | `embabel.dice.store.decay.k` | `2.0` | Decay-rate multiplier for the staleness policy |
 | `embabel.dice.store.decay.prune-stale` | `false` | Hard-delete STALE propositions during the sweep |
 | `embabel.dice.store.vector-index.enabled` | `true` | Register the vector index schema |
-| `embabel.dice.store.vector-index.label` | `Proposition` | Node label the vector index covers (must stay `Proposition` — the `@VectorIndex` annotation it mirrors isn't configurable) |
-| `embabel.dice.store.vector-index.property` | `embedding` | Property holding the embedding (must stay `embedding`, same reason) |
-| `embabel.dice.store.vector-index.similarity-function` | `cosine` | Vector similarity function |
-| `embabel.dice.store.vector-index.name` | unset (derived) | Index name. Leave unset to derive `Proposition_embedding_vector`. An explicit value is accepted only if it equals that derived name; blank or divergent values are rejected at startup, since they would silently break vector search. |
+
+The index's label (`Proposition`), property (`embedding`), name (`Proposition_embedding_vector`), and
+similarity (cosine) aren't configurable — they're fixed by the `@VectorIndex` annotation on
+`PropositionNode.embedding`, which the `loadNearest` path reads. Exposing them as config would let them
+drift from that annotation and silently break vector search, so they live as constants on
+`DrivinePropositionRepository`.
 
 ## Dependencies
 
