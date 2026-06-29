@@ -51,6 +51,13 @@ data class DiceStoreProperties(
         var label: String = "Proposition",
         var property: String = "embedding",
         var similarityFunction: String = "cosine",
-        var name: String = "",
+        /**
+         * Optional explicit index name. Leave it unset (null) to use the name derived from
+         * [label]/[property] — which is the canonical, annotation-bound name every search path
+         * expects. A non-null override is accepted only when it matches that derived name; a blank
+         * or divergent value is rejected at startup, since it would silently break vector search
+         * (see [DiceStorageAutoConfiguration.resolveVectorIndexName]).
+         */
+        var name: String? = null,
     )
 }

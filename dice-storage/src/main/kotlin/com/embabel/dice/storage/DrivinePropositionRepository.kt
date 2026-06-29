@@ -512,20 +512,26 @@ open class DrivinePropositionRepository(
         builder(OrderSpec("coalesce(proposition.effectiveConfidence, -1.0)", OrderDirection.DESC))
     }
 
-    private companion object {
+    companion object {
         /** Stripe count for save-time dedup locks. */
-        const val DEDUP_STRIPES = 64
+        private const val DEDUP_STRIPES = 64
 
-        /** Default vector-index name for `@VectorIndex` on `Proposition.embedding` (`{label}_{property}_vector`). */
+        /**
+         * The one vector-index name every search path must agree on: the name Drivine derives from
+         * the `@VectorIndex` annotation on `Proposition.embedding` (`{label}_{property}_vector`).
+         * That annotation isn't configurable, so this is the canonical source of truth — the
+         * autoconfigure resolves the schema (DDL) and `findClusters` names against it so all three
+         * paths (`loadNearest`, `findClusters`, schema) target the same index.
+         */
         const val VECTOR_INDEX = "Proposition_embedding_vector"
 
         /** Mirrors the [PropositionQuery.decayK] default; the materialised column is computed at this k. */
-        const val DEFAULT_DECAY_K = 2.0
+        private const val DEFAULT_DECAY_K = 2.0
 
         /**
          * Cascade-aware bulk-clear Cypher, externalised to `queries/clear_propositions.cypher` so it runs
          * standalone for bench-testing. Loaded once via Drivine's [QueryLoader] (which doesn't cache).
          */
-        val CLEAR_PROPOSITIONS: CypherStatement = CypherStatement(QueryLoader.loadQuery("clear_propositions"))
+        private val CLEAR_PROPOSITIONS: CypherStatement = CypherStatement(QueryLoader.loadQuery("clear_propositions"))
     }
 }
