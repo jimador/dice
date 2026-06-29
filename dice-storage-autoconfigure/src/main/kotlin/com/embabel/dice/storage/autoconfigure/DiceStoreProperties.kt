@@ -46,12 +46,9 @@ data class DiceStoreProperties(
     )
 
     /**
-     * The proposition embedding vector index (graph backend).
-     *
-     * Only [enabled] is configurable: the index's label, property, name, and similarity are fixed by
-     * the `@VectorIndex` annotation on `PropositionNode.embedding`, which the non-configurable
-     * `loadNearest` path reads. Exposing them here would let config drift away from that annotation
-     * and silently break vector search, so they live as constants on `DrivinePropositionRepository`.
+     * The proposition embedding vector index (graph backend). Only [enabled] is configurable: its
+     * label, property, name, and similarity are fixed by the `@VectorIndex` annotation on
+     * `PropositionNode.embedding` and live as constants on `DrivinePropositionRepository`.
      */
     data class VectorIndex(
         var enabled: Boolean = true,
