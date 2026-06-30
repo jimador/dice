@@ -45,12 +45,12 @@ data class DiceStoreProperties(
         var pruneStale: Boolean = false,
     )
 
-    /** The proposition embedding vector index (graph backend). */
+    /**
+     * The proposition embedding vector index (graph backend). Only [enabled] is configurable: its
+     * label, property, name, and similarity are fixed by the `@VectorIndex` annotation on
+     * `PropositionNode.embedding` and live as constants on `DrivinePropositionRepository`.
+     */
     data class VectorIndex(
         var enabled: Boolean = true,
-        var label: String = "Proposition",
-        var property: String = "embedding",
-        var similarityFunction: String = "cosine",
-        var name: String = "",
     )
 }

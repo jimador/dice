@@ -64,8 +64,7 @@ open class DrivinePropositionRepository(
     transactionManager: PlatformTransactionManager,
     /**
      * Name of the Neo4j vector index backing `Proposition.embedding`, used by the hand-written
-     * [findClusters] Cypher. Defaults to Drivine's derived `{label}_{property}_vector`; the
-     * autoconfigure passes the configured name so a customised index stays in sync.
+     * [findClusters] Cypher. Defaults to the canonical [VECTOR_INDEX]; overridable only for tests.
      */
     private val vectorIndexName: String = VECTOR_INDEX,
 ) : PropositionRepository {
@@ -512,20 +511,33 @@ open class DrivinePropositionRepository(
         builder(OrderSpec("coalesce(proposition.effectiveConfidence, -1.0)", OrderDirection.DESC))
     }
 
-    private companion object {
+    companion object {
         /** Stripe count for save-time dedup locks. */
-        const val DEDUP_STRIPES = 64
+        private const val DEDUP_STRIPES = 64
 
-        /** Default vector-index name for `@VectorIndex` on `Proposition.embedding` (`{label}_{property}_vector`). */
-        const val VECTOR_INDEX = "Proposition_embedding_vector"
+        /**
+         * The node label and embedding property the proposition vector index covers. These mirror
+         * the `@VectorIndex` annotation on `PropositionNode.embedding`, which `loadNearest` reads but
+         * can't be configured — so they're the canonical identity every other path derives from.
+         */
+        const val VECTOR_INDEX_LABEL = "Proposition"
+        const val VECTOR_INDEX_PROPERTY = "embedding"
+
+        /**
+         * The one vector-index name every search path must agree on. Drivine derives it as
+         * `{label}_{property}_vector` from the annotation, and `findClusters` and the schema (DDL)
+         * are wired to this same value, so all three (`loadNearest`, `findClusters`, schema) hit the
+         * same index.
+         */
+        const val VECTOR_INDEX = VECTOR_INDEX_LABEL + "_" + VECTOR_INDEX_PROPERTY + "_vector"
 
         /** Mirrors the [PropositionQuery.decayK] default; the materialised column is computed at this k. */
-        const val DEFAULT_DECAY_K = 2.0
+        private const val DEFAULT_DECAY_K = 2.0
 
         /**
          * Cascade-aware bulk-clear Cypher, externalised to `queries/clear_propositions.cypher` so it runs
          * standalone for bench-testing. Loaded once via Drivine's [QueryLoader] (which doesn't cache).
          */
-        val CLEAR_PROPOSITIONS: CypherStatement = CypherStatement(QueryLoader.loadQuery("clear_propositions"))
+        private val CLEAR_PROPOSITIONS: CypherStatement = CypherStatement(QueryLoader.loadQuery("clear_propositions"))
     }
 }

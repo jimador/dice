@@ -81,16 +81,13 @@ open class DiceStorageAutoConfiguration {
         persistenceManager: PersistenceManager,
         ai: Ai,
         transactionManager: PlatformTransactionManager,
-        properties: DiceStoreProperties,
     ): PropositionRepository {
-        val vi = properties.vectorIndex
-        // Mirror Drivine's derived index name when none is configured, so findClusters' index lookup
-        // stays in sync with whatever name the schema registered.
-        val indexName = vi.name.ifBlank { "${vi.label}_${vi.property}_vector" }
-        logger.info("Wiring graph proposition store (Drivine/Neo4j), vector index '{}'", indexName)
+        logger.info(
+            "Wiring graph proposition store (Drivine/Neo4j), vector index '{}'",
+            DrivinePropositionRepository.VECTOR_INDEX,
+        )
         return DrivinePropositionRepository(
             graphObjectManager, persistenceManager, ai.withDefaultEmbeddingService(), transactionManager,
-            vectorIndexName = indexName,
         )
     }
 
@@ -166,19 +163,26 @@ open class DiceStorageAutoConfiguration {
         havingValue = "true",
         matchIfMissing = true,
     )
-    open fun propositionVectorIndexSchema(ai: Ai, properties: DiceStoreProperties): SchemaCatalog {
+    open fun propositionVectorIndexSchema(ai: Ai): SchemaCatalog {
         val embeddingService = ai.withDefaultEmbeddingService()
-        val vi = properties.vectorIndex
-        val spec = VectorIndexSpec(
-            label = vi.label,
-            property = vi.property,
-            dimensions = embeddingService.dimensions,
-            similarity = SimilarityFunction.valueOf(vi.similarityFunction.uppercase()),
-            name = vi.name,
-        )
+        val spec = propositionVectorIndexSpec(embeddingService.dimensions)
         logger.info("Registering proposition vector index schema: {} (model={})", spec, embeddingService.name)
         return SchemaCatalog.of(spec).withVersion(embeddingService.name)
     }
+
+    /**
+     * The schema (DDL) for the proposition vector index. Its label, property, name, and similarity
+     * come straight from [DrivinePropositionRepository]'s canonical constants — the same identity the
+     * `@VectorIndex` annotation gives `loadNearest` and the `findClusters` Cypher — so all three paths
+     * target one index. Only [dimensions] varies, since it comes from the embedding model at runtime.
+     */
+    internal fun propositionVectorIndexSpec(dimensions: Int): VectorIndexSpec = VectorIndexSpec(
+        label = DrivinePropositionRepository.VECTOR_INDEX_LABEL,
+        property = DrivinePropositionRepository.VECTOR_INDEX_PROPERTY,
+        dimensions = dimensions,
+        similarity = SimilarityFunction.COSINE,
+        name = DrivinePropositionRepository.VECTOR_INDEX,
+    )
 
     // ---- In-memory backend (default) ----
 
