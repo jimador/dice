@@ -15,8 +15,8 @@
  */
 package com.embabel.dice.metamodel
 
-import com.embabel.dice.metamodel.support.JaversMetamodelDiffer
 import com.embabel.dice.metamodel.support.MentionTypeDriftQuarantinePolicy
+import com.embabel.dice.metamodel.support.StructuralMetamodelDiffer
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Test
 
@@ -25,8 +25,8 @@ class MetamodelConfigurationTest {
     private val config = MetamodelConfiguration()
 
     @Test
-    fun `provides a JaVers-backed differ by default`() {
-        assertInstanceOf(JaversMetamodelDiffer::class.java, config.metamodelDiffer())
+    fun `provides the structural differ by default`() {
+        assertInstanceOf(StructuralMetamodelDiffer::class.java, config.metamodelDiffer())
     }
 
     @Test

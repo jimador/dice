@@ -18,7 +18,7 @@ package com.embabel.dice.metamodel
 import com.embabel.agent.core.DataDictionary
 import com.embabel.agent.core.DynamicType
 import com.embabel.agent.core.ValuePropertyDefinition
-import com.embabel.dice.metamodel.support.JaversMetamodelDiffer
+import com.embabel.dice.metamodel.support.StructuralMetamodelDiffer
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
@@ -30,7 +30,7 @@ class MetamodelDifferTest {
 
     @BeforeEach
     fun setUp() {
-        differ = JaversMetamodelDiffer()
+        differ = StructuralMetamodelDiffer()
     }
 
     private fun schemaWith(name: String = "test", vararg typeNames: String): DataDictionary =

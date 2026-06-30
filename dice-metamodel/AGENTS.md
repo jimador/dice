@@ -12,13 +12,13 @@ the diff is lossy.
 | `MetamodelVersion` | `MetamodelVersion.kt` | Immutable stamp of a `DataDictionary` at a point in time. Holds entity-type names, label sets, property sets, and relationship names. The `contentHash` is a SHA-256 digest of all structural content (schema name excluded), so two structurally identical schemas produce the same hash regardless of name. Use `MetamodelVersion.from(dataDictionary)` to create one. |
 | `MetamodelChange` | `MetamodelDiff.kt` | Sealed interface with five variants: `EntityTypeAdded`, `EntityTypeRemoved`, `EntityTypeModified` (labels and/or properties changed on a same-named type), `RelationshipAdded`, `RelationshipRemoved`. Exhaustive `when` expressions work on it. |
 | `MetamodelDiff` | `MetamodelDiff.kt` | The result of comparing two versions. Carries the ordered `changes` list plus convenience accessors `removedEntityTypes`, `addedEntityTypes`, and `modifiedEntityTypes`. `isEmpty` is `true` when nothing changed. |
-| `MetamodelDiffer` | `MetamodelDiffer.kt` | Interface with two `diff()` overloads — one takes `MetamodelVersion` stamps, the other takes raw `DataDictionary` instances for convenience. Default impl is `JaversMetamodelDiffer` (in `support/`). |
+| `MetamodelDiffer` | `MetamodelDiffer.kt` | Interface with two `diff()` overloads — one takes `MetamodelVersion` stamps, the other takes raw `DataDictionary` instances for convenience. Default impl is `StructuralMetamodelDiffer` (in `support/`). |
 | `DriftQuarantinePolicy` | `DriftQuarantinePolicy.kt` | Interface that evaluates a collection of propositions against a `MetamodelDiff` and returns a `QuarantineResult`. Call `evaluate(diff, propositions)`. |
 | `QuarantineDecision` | `DriftQuarantinePolicy.kt` | Sealed interface: `Conforming` (no action needed) or `Quarantined` (proposition set to `STALE`, reason written to `DiceMetadataKeys.QUARANTINE_REASON`). |
 | `QuarantineResult` | `DriftQuarantinePolicy.kt` | Aggregate of one `QuarantineDecision` per input proposition, split into `conforming` and `quarantined` lists. Caller is responsible for persisting the returned copies. |
-| `JaversMetamodelDiffer` | `support/JaversMetamodelDiffer.kt` | Default `MetamodelDiffer`. Uses direct sorted-string comparison for label/property drift rather than full JaVers object-graph diff; JaVers is on the classpath for future richer diffing. Stateless and thread-safe. |
+| `StructuralMetamodelDiffer` | `support/StructuralMetamodelDiffer.kt` | Default `MetamodelDiffer`. Deterministic structural comparison: diffs entity-type, label, property, and relationship sets directly (no delimiter-joined projection). Stateless and thread-safe. |
 | `MentionTypeDriftQuarantinePolicy` | `support/MentionTypeDriftQuarantinePolicy.kt` | Default `DriftQuarantinePolicy`. Quarantines a proposition when any of its entity mentions references a type that was removed or that lost labels/properties (lossy changes). Additive changes never trigger quarantine. Already-quarantined propositions are passed through unchanged (idempotent). |
-| `MetamodelConfiguration` | `MetamodelConfiguration.kt` | Spring `@Configuration` that registers `JaversMetamodelDiffer` and `MentionTypeDriftQuarantinePolicy` as `@ConditionalOnMissingBean` beans. Import it to get both without wiring by hand; define your own beans to override either one. |
+| `MetamodelConfiguration` | `MetamodelConfiguration.kt` | Spring `@Configuration` that registers `StructuralMetamodelDiffer` and `MentionTypeDriftQuarantinePolicy` as `@ConditionalOnMissingBean` beans. Import it to get both without wiring by hand; define your own beans to override either one. |
 
 ## Dependencies
 
@@ -26,7 +26,6 @@ the diff is lossy.
   `DataDictionary` (via `embabel-agent-api`).
 - **`embabel-agent-api`** and **`embabel-agent-rag-core`** — `provided`; supplied by the consuming
   Spring Boot application, not pulled transitively.
-- **JaVers 7.9.0** — bundled; used by `JaversMetamodelDiffer`.
 - **Spring Context / Boot Autoconfigure** — `provided`; only needed if you use `MetamodelConfiguration`.
 
 ## Quarantine workflow

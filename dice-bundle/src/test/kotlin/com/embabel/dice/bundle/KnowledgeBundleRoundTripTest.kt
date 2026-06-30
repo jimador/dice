@@ -31,6 +31,8 @@ import com.embabel.dice.temporal.TemporalMetadata
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayInputStream
@@ -605,6 +607,67 @@ class KnowledgeBundleRoundTripTest {
     // Empty bundle import counts (IN-04)
     // -------------------------------------------------------------------------
 
+    // -------------------------------------------------------------------------
+    // Context boundary isolation
+    // -------------------------------------------------------------------------
+
+    private fun propositionIn(ctx: String, text: String): Proposition =
+        Proposition(
+            contextId = ContextId(ctx),
+            text = text,
+            mentions = emptyList(),
+            confidence = 0.8,
+            decay = 0.05,
+            status = PropositionStatus.ACTIVE,
+        )
+
+    @Test
+    fun `from rejects a proposition belonging to another context`() {
+        val foreign = propositionIn("other-ctx", "leaked fact")
+        val ex = assertThrows(IllegalArgumentException::class.java) {
+            KnowledgeBundle.from(contextId, listOf(proposition("local fact"), foreign))
+        }
+        assertTrue(ex.message!!.contains("other-ctx"), "Message should name the offending context: ${ex.message}")
+    }
+
+    @Test
+    fun `import refuses a proposition from a different context and does not write it`() {
+        val local = proposition("local fact")
+        val foreign = propositionIn("other-ctx", "leaked fact")
+        // Build a cross-context bundle directly, bypassing from()'s guard, to prove the importer
+        // defends the boundary too — a deserialized bundle never goes through from().
+        val leaky = KnowledgeBundle(contextId = contextId, propositions = listOf(local, foreign))
+        val json = exporter.exportToString(leaky)
+
+        val store = InMemoryPropositionRepository()
+        val outcome = importer.importFromString(json, store)
+
+        val success = assertInstanceOf(BundleImportOutcome.Success::class.java, outcome)
+        assertEquals(1, success.result.imported)
+        assertEquals(1, success.result.rejected)
+        assertNotNull(store.findById(local.id), "the in-context proposition is imported")
+        assertNull(store.findById(foreign.id), "the foreign-context proposition must not be written")
+        assertTrue(
+            success.result.notes.any { it.reason.contains("context boundary") },
+            "Expected a note about the refused context boundary: ${success.result.notes}",
+        )
+    }
+
+    @Test
+    fun `unknown formatVersion is rejected before the payload is bound`() {
+        // A newer version whose payload shape can't bind to the current model (propositions is an
+        // object, not an array). The version gate must fire first: UnknownFormatVersion, not the
+        // ParseFailure that binding the unfamiliar payload would produce.
+        val json = """{"formatVersion":"99.0","contextId":"test-ctx","propositions":{"unexpected":"shape"}}"""
+        val store = InMemoryPropositionRepository()
+
+        val outcome = importer.importFromString(json, store)
+
+        val rejection = assertInstanceOf(BundleImportOutcome.UnknownFormatVersion::class.java, outcome)
+        assertEquals("99.0", rejection.foundVersion)
+        assertEquals(0, store.count())
+    }
+
     @Test
     fun `empty bundle round-trip yields imported 0 and total 0`() {
         val bundle = KnowledgeBundle.from(contextId, emptyList())
@@ -619,6 +682,85 @@ class KnowledgeBundleRoundTripTest {
         assertEquals(0, success.result.skipped)
         assertEquals(0, success.result.rejected)
         assertEquals(0, success.result.total)
+        assertEquals(0, store.count())
+    }
+
+    // -------------------------------------------------------------------------
+    // Regression: parse-path hardening (see metamodel/bundle adversarial review)
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `non-textual formatVersion is rejected, not coerced to the current version`() {
+        // A future producer emits formatVersion as a number. It must NOT be treated as "missing"
+        // (which would default to a supported version and let an incompatible payload through) —
+        // it goes through the gate as "2" and is rejected, never touching the store.
+        val json = """{"formatVersion":2,"contextId":"test-ctx","propositions":[]}"""
+        val store = InMemoryPropositionRepository()
+
+        val outcome = importer.importFromString(json, store)
+
+        val rejection = assertInstanceOf(BundleImportOutcome.UnknownFormatVersion::class.java, outcome)
+        assertEquals("2", rejection.foundVersion)
+        assertEquals(0, store.count())
+    }
+
+    @Test
+    fun `empty or null input returns ParseFailure instead of throwing`() {
+        val store = InMemoryPropositionRepository()
+        // Empty string, whitespace, the JSON null literal, an empty stream, and an empty reader all
+        // parse to a missing/null node at Jackson rather than throwing. Each must come back as a clean
+        // ParseFailure — the old readValue path NPE'd the caller on these.
+        assertInstanceOf(BundleImportOutcome.ParseFailure::class.java, importer.importFromString("", store))
+        assertInstanceOf(BundleImportOutcome.ParseFailure::class.java, importer.importFromString("   ", store))
+        assertInstanceOf(BundleImportOutcome.ParseFailure::class.java, importer.importFromString("null", store))
+        assertInstanceOf(
+            BundleImportOutcome.ParseFailure::class.java,
+            importer.importFromStream(ByteArrayInputStream(ByteArray(0)), store),
+        )
+        assertInstanceOf(
+            BundleImportOutcome.ParseFailure::class.java,
+            importer.importFromReader(StringReader(""), store),
+        )
+        assertEquals(0, store.count())
+    }
+
+    @Test
+    fun `oversized stream is rejected mid-parse rather than fully buffered`() {
+        val tinyImporter = JacksonKnowledgeBundleImporter(maxBundleBytes = 10)
+        val json = """{"formatVersion":"1.0","contextId":"x","propositions":[]}"""
+        val store = InMemoryPropositionRepository()
+
+        val outcome = tinyImporter.importFromStream(ByteArrayInputStream(json.toByteArray()), store)
+
+        val failure = assertInstanceOf(BundleImportOutcome.ParseFailure::class.java, outcome)
+        assertTrue(failure.reason.contains("exceeds maximum"), "Expected size-limit message: ${failure.reason}")
+        assertEquals(0, store.count())
+    }
+
+    @Test
+    fun `oversized reader is rejected mid-parse rather than fully buffered`() {
+        val tinyImporter = JacksonKnowledgeBundleImporter(maxBundleBytes = 10)
+        val json = """{"formatVersion":"1.0","contextId":"x","propositions":[]}"""
+        val store = InMemoryPropositionRepository()
+
+        val outcome = tinyImporter.importFromReader(StringReader(json), store)
+
+        val failure = assertInstanceOf(BundleImportOutcome.ParseFailure::class.java, outcome)
+        assertTrue(failure.reason.contains("exceeds maximum"), "Expected size-limit message: ${failure.reason}")
+        assertEquals(0, store.count())
+    }
+
+    @Test
+    fun `multibyte reader is capped by UTF-8 byte count, not character count`() {
+        val tinyImporter = JacksonKnowledgeBundleImporter(maxBundleBytes = 12)
+        // 8 three-byte characters = 24 UTF-8 bytes but only 8 chars. A character cap would admit this
+        // (8 < 12); the byte cap must reject it (24 > 12) so the reader path matches the other paths.
+        val store = InMemoryPropositionRepository()
+
+        val outcome = tinyImporter.importFromReader(StringReader("€".repeat(8)), store)
+
+        val failure = assertInstanceOf(BundleImportOutcome.ParseFailure::class.java, outcome)
+        assertTrue(failure.reason.contains("exceeds maximum"), "Expected size-limit message: ${failure.reason}")
         assertEquals(0, store.count())
     }
 }

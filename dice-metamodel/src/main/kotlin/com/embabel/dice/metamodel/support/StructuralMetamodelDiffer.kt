@@ -19,29 +19,21 @@ import com.embabel.dice.metamodel.MetamodelChange
 import com.embabel.dice.metamodel.MetamodelDiff
 import com.embabel.dice.metamodel.MetamodelDiffer
 import com.embabel.dice.metamodel.MetamodelVersion
-import org.javers.core.JaversBuilder
 import org.slf4j.LoggerFactory
 
 /**
- * [MetamodelDiffer] that uses [JaVers](https://javers.org/) as its underlying comparison engine.
+ * The default [MetamodelDiffer]: a deterministic, structural comparison of two [MetamodelVersion]s.
  *
- * For the entity-type shape comparison (label and property drift on same-named types), the
- * implementation compares the label and property sets directly rather than running the full
- * JaVers object-graph diff. JaVers is retained as the declared dependency because it is already
- * present in the consuming application for broader audit-trail use cases (proposition-level change
- * tracking), and the `JaversBuilder` instance here is available for richer structural diffing if
- * that need arises.
+ * It works on the snapshot data each version already carries — entity-type names, per-type label and
+ * property sets, and relationship descriptors — and reports what was added, removed, or modified.
+ * Sets are compared directly (never via a delimiter-joined projection), so a label or property whose
+ * name contains a delimiter can't collapse two genuinely different sets into a false "unchanged".
  *
  * Stateless and thread-safe — a single shared instance is fine.
  */
-class JaversMetamodelDiffer : MetamodelDiffer {
+class StructuralMetamodelDiffer : MetamodelDiffer {
 
-    private val logger = LoggerFactory.getLogger(JaversMetamodelDiffer::class.java)
-
-    // JaVers instance kept for future richer diffing; entity-type shape comparison compares the
-    // label/property sets directly (see diff() below), which is sufficient and cheaper.
-    @Suppress("unused")
-    private val javers = JaversBuilder.javers().build()
+    private val logger = LoggerFactory.getLogger(StructuralMetamodelDiffer::class.java)
 
     override fun diff(from: MetamodelVersion, to: MetamodelVersion): MetamodelDiff {
         val changes = mutableListOf<MetamodelChange>()

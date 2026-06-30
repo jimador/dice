@@ -208,5 +208,16 @@ class MetamodelVersionTest {
             val b = MetamodelVersion.from(personWithProperties("email", "age"))
             assertEquals(a.contentHash, b.contentHash)
         }
+
+        @Test
+        fun `a property name containing the set delimiter does not collide with a split set`() {
+            // ["a;b"] and ["a", "b"] are genuinely different property sets. A delimiter-joined
+            // encoding would serialise both as "a;b;" and hash them identically, hiding a real
+            // (lossy) schema change. Length-prefixed encoding keeps them distinct.
+            val joined = MetamodelVersion.from(personWithProperties("a;b"))
+            val split = MetamodelVersion.from(personWithProperties("a", "b"))
+            assertNotEquals(joined.contentHash, split.contentHash)
+            assertFalse(joined.hasSameContentAs(split))
+        }
     }
 }

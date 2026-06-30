@@ -23,8 +23,10 @@ import com.embabel.dice.bundle.KnowledgeBundleImporter
 import com.embabel.dice.bundle.PropositionImportNote
 import com.embabel.dice.proposition.PropositionStore
 import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
+import java.io.IOException
 import java.io.InputStream
 import java.io.Reader
 
@@ -34,21 +36,25 @@ import java.io.Reader
  * Uses `jacksonObjectMapper().findAndRegisterModules()` — the same configuration used
  * throughout the library — so that `Instant` fields on propositions deserialise correctly.
  *
- * Format-version checking happens before any payload is written to the store, so
- * an unrecognised [KnowledgeBundle.formatVersion] is always a clean no-op.
+ * Format-version checking happens before the payload is bound to the model or written to the
+ * store, so an unrecognised [KnowledgeBundle.formatVersion] is always a clean no-op — even when a
+ * newer version also changed the payload shape.
  *
- * Bundles larger than [maxBundleBytes] are rejected before deserialization to guard
- * against resource exhaustion from untrusted input. The default cap is 50 MB. This
- * guard applies to [importFromString] (checked by UTF-8 byte length). The [importFromStream]
- * and [importFromReader] overrides use Jackson's native streaming path without
- * buffering into a String; callers passing untrusted streams should apply their own
- * length limit at the transport layer or use [importFromString] with a pre-validated string.
+ * Each proposition must belong to the bundle's own context; one carrying a different `contextId` is
+ * refused (counted as rejected, with a note) rather than imported, so a bundle can't leak facts
+ * across the context boundary.
+ *
+ * Bundles larger than [maxBundleBytes] are rejected to guard against resource exhaustion from
+ * untrusted input; the default cap is 50 MB. [importFromString] checks the UTF-8 byte length up
+ * front, while [importFromStream] and [importFromReader] cap the bytes/characters they read so an
+ * oversized stream is aborted mid-parse rather than fully materialised. All three return
+ * [BundleImportOutcome.ParseFailure] when the limit is exceeded.
  *
  * @param supportedVersions The set of [KnowledgeBundle.formatVersion] strings this
  *   instance accepts. Defaults to the single current version ([KnowledgeBundle.FORMAT_VERSION]).
- * @param maxBundleBytes Maximum serialized bundle size in bytes accepted for
- *   [importFromString]. Bundles exceeding this limit return [BundleImportOutcome.ParseFailure]
- *   without parsing. Defaults to [DEFAULT_MAX_BUNDLE_BYTES] (50 MB).
+ * @param maxBundleBytes Maximum serialized bundle size accepted across all import paths.
+ *   Bundles exceeding this limit return [BundleImportOutcome.ParseFailure]. Defaults to
+ *   [DEFAULT_MAX_BUNDLE_BYTES] (50 MB).
  */
 class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
     private val supportedVersions: Set<String> = setOf(KnowledgeBundle.FORMAT_VERSION),
@@ -66,7 +72,7 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
     companion object {
-        /** Default upper bound on accepted bundle size for string-based import: 50 MB. */
+        /** Default upper bound on accepted bundle size across all import paths: 50 MB. */
         const val DEFAULT_MAX_BUNDLE_BYTES: Int = 50 * 1024 * 1024
     }
 
@@ -89,8 +95,8 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
             )
         }
 
-        val bundle = try {
-            mapper.readValue(serialised, KnowledgeBundle::class.java)
+        val tree = try {
+            mapper.readTree(serialised)
         } catch (ex: Exception) {
             logger.debug("Failed to parse bundle: {}", ex.message)
             return BundleImportOutcome.ParseFailure(
@@ -99,7 +105,7 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
             )
         }
 
-        return importParsedBundle(bundle, store, conflictPolicy)
+        return importFromTree(tree, store, conflictPolicy)
     }
 
     /**
@@ -113,8 +119,10 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
         store: PropositionStore,
         conflictPolicy: ImportConflictPolicy,
     ): BundleImportOutcome {
-        val bundle = try {
-            mapper.readValue(inputStream, KnowledgeBundle::class.java)
+        val tree = try {
+            // Cap the bytes read so an untrusted stream can't exhaust memory; matches the byte
+            // limit importFromString enforces up front.
+            mapper.readTree(BoundedInputStream(inputStream, maxBundleBytes))
         } catch (ex: Exception) {
             logger.debug("Failed to parse bundle from stream: {}", ex.message)
             return BundleImportOutcome.ParseFailure(
@@ -122,7 +130,7 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
                 cause = ex,
             )
         }
-        return importParsedBundle(bundle, store, conflictPolicy)
+        return importFromTree(tree, store, conflictPolicy)
     }
 
     /**
@@ -134,8 +142,10 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
         store: PropositionStore,
         conflictPolicy: ImportConflictPolicy,
     ): BundleImportOutcome {
-        val bundle = try {
-            mapper.readValue(reader, KnowledgeBundle::class.java)
+        val tree = try {
+            // Cap the UTF-8 bytes the characters would encode to, so this path enforces the same
+            // byte limit as the string and stream paths instead of letting multibyte content through.
+            mapper.readTree(BoundedReader(reader, maxBundleBytes))
         } catch (ex: Exception) {
             logger.debug("Failed to parse bundle from reader: {}", ex.message)
             return BundleImportOutcome.ParseFailure(
@@ -143,29 +153,80 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
                 cause = ex,
             )
         }
+        return importFromTree(tree, store, conflictPolicy)
+    }
+
+    /**
+     * Reject an unrecognised format version before binding the payload to the model.
+     *
+     * The JSON is read into a generic tree first (schema-agnostic), `formatVersion` is checked, and
+     * only a supported version is then mapped to a [KnowledgeBundle]. So a newer bundle whose payload
+     * shape has changed is rejected cleanly as [BundleImportOutcome.UnknownFormatVersion] rather than
+     * failing as a [BundleImportOutcome.ParseFailure] on the unfamiliar payload — the store is never
+     * touched for a version we don't understand.
+     */
+    private fun importFromTree(
+        tree: JsonNode,
+        store: PropositionStore,
+        conflictPolicy: ImportConflictPolicy,
+    ): BundleImportOutcome {
+        // Empty or null input (an empty file, an empty HTTP body, or the literal "null") parses to a
+        // missing/null node rather than throwing. Reject it cleanly here: otherwise it slips through the
+        // version gate on the default version and binds to a null bundle, which NPEs in the import loop.
+        if (tree.isMissingNode || tree.isNull) {
+            logger.debug("Rejecting empty or null bundle content")
+            return BundleImportOutcome.ParseFailure(reason = "bundle content is empty")
+        }
+
+        // Distinguish "formatVersion absent" from "present but not a string". Absent mirrors the
+        // data-class default (the current version). A present-but-non-textual version — e.g. a numeric
+        // 2 from a future producer — must NOT be coerced to the current version; it goes through the
+        // gate as-is so a forward-incompatible bundle is rejected instead of bound to today's model.
+        val versionNode = tree.get("formatVersion")
+        val version = if (versionNode == null || versionNode.isNull) {
+            KnowledgeBundle.FORMAT_VERSION
+        } else {
+            versionNode.asText()
+        }
+        if (version !in supportedVersions) {
+            logger.debug(
+                "Rejecting bundle with unrecognised formatVersion '{}'; supported: {}",
+                version,
+                supportedVersions,
+            )
+            return BundleImportOutcome.UnknownFormatVersion(
+                foundVersion = version,
+                supportedVersions = supportedVersions,
+            )
+        }
+
+        val bundle: KnowledgeBundle? = try {
+            mapper.treeToValue(tree, KnowledgeBundle::class.java)
+        } catch (ex: Exception) {
+            logger.debug("Failed to bind bundle payload: {}", ex.message)
+            return BundleImportOutcome.ParseFailure(
+                reason = ex.message ?: "unknown parse error",
+                cause = ex,
+            )
+        }
+        // treeToValue can return null (e.g. a JSON null that didn't trip the guard above) without
+        // throwing; guard it so the never-throw contract holds instead of NPE-ing downstream.
+        if (bundle == null) {
+            logger.debug("Bundle payload bound to null")
+            return BundleImportOutcome.ParseFailure(reason = "bundle content did not bind to a KnowledgeBundle")
+        }
+
         return importParsedBundle(bundle, store, conflictPolicy)
     }
 
     /**
-     * Applies the version gate and then runs the proposition import loop on an already-parsed bundle.
+     * Runs the proposition import loop on a parsed, version-checked bundle.
      */
     private fun importParsedBundle(
         bundle: KnowledgeBundle,
         store: PropositionStore,
         conflictPolicy: ImportConflictPolicy,
     ): BundleImportOutcome {
-        if (bundle.formatVersion !in supportedVersions) {
-            logger.debug(
-                "Rejecting bundle with unrecognised formatVersion '{}'; supported: {}",
-                bundle.formatVersion,
-                supportedVersions,
-            )
-            return BundleImportOutcome.UnknownFormatVersion(
-                foundVersion = bundle.formatVersion,
-                supportedVersions = supportedVersions,
-            )
-        }
-
         var imported = 0
         var overwritten = 0
         var skipped = 0
@@ -178,6 +239,19 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
         val seenInBundle = mutableSetOf<String>()
 
         for (proposition in bundle.propositions) {
+            // Enforce the context boundary on the way in. A bundle is scoped to one context; a
+            // proposition carrying a different contextId would otherwise be saved under its own
+            // context, leaking facts across the boundary. Refuse it rather than import it.
+            if (proposition.contextId != bundle.contextId) {
+                rejected++
+                notes += PropositionImportNote(
+                    propositionId = proposition.id,
+                    reason = "proposition belongs to context '${proposition.contextId.value}', not the " +
+                        "bundle's context '${bundle.contextId.value}'; refused to cross the context boundary",
+                )
+                continue
+            }
+
             if (!seenInBundle.add(proposition.id)) {
                 skipped++
                 notes += PropositionImportNote(
@@ -248,5 +322,65 @@ class JacksonKnowledgeBundleImporter @JvmOverloads constructor(
                 notes = notes,
             ),
         )
+    }
+}
+
+/** Raised by the bounded stream/reader wrappers once input passes the size cap. */
+private class BundleSizeExceededException(limit: Int) :
+    IOException("bundle size exceeds maximum allowed $limit bytes")
+
+/**
+ * Wraps an input stream and aborts the read once more than [limit] bytes have been consumed,
+ * so a huge untrusted stream can't be fully materialised into a JSON tree.
+ */
+private class BoundedInputStream(
+    private val delegate: InputStream,
+    private val limit: Int,
+) : InputStream() {
+    private var count = 0L
+
+    private fun track(read: Int) {
+        if (read > 0) {
+            count += read
+            if (count > limit) throw BundleSizeExceededException(limit)
+        }
+    }
+
+    override fun read(): Int = delegate.read().also { if (it >= 0) track(1) }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int = delegate.read(b, off, len).also { track(it) }
+
+    override fun close() = delegate.close()
+}
+
+/**
+ * Wraps a reader and aborts once the characters consumed would encode to more than [limit] UTF-8
+ * bytes. A character can be up to several bytes, so counting characters would let a multibyte
+ * payload sail past a byte cap; instead we sum each character's UTF-8 byte length (surrogate halves
+ * counted as 3 each — a safe over-estimate) so the reader path enforces the same byte limit as the
+ * string and stream paths.
+ */
+private class BoundedReader(
+    private val delegate: Reader,
+    private val limit: Int,
+) : Reader() {
+    private var byteCount = 0L
+
+    override fun read(cbuf: CharArray, off: Int, len: Int): Int = delegate.read(cbuf, off, len).also { read ->
+        if (read > 0) {
+            for (i in off until off + read) {
+                byteCount += utf8ByteLength(cbuf[i])
+            }
+            if (byteCount > limit) throw BundleSizeExceededException(limit)
+        }
+    }
+
+    override fun close() = delegate.close()
+
+    /** Conservative UTF-8 byte length of a single UTF-16 code unit; surrogate halves count as 3. */
+    private fun utf8ByteLength(ch: Char): Int = when {
+        ch.code < 0x80 -> 1
+        ch.code < 0x800 -> 2
+        else -> 3
     }
 }

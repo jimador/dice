@@ -20,8 +20,8 @@ import com.embabel.agent.core.DataDictionary
 import com.embabel.agent.core.DynamicType
 import com.embabel.agent.core.ValuePropertyDefinition
 import com.embabel.dice.common.DiceMetadataKeys
-import com.embabel.dice.metamodel.support.JaversMetamodelDiffer
 import com.embabel.dice.metamodel.support.MentionTypeDriftQuarantinePolicy
+import com.embabel.dice.metamodel.support.StructuralMetamodelDiffer
 import com.embabel.dice.proposition.EntityMention
 import com.embabel.dice.proposition.MentionRole
 import com.embabel.dice.proposition.Proposition
@@ -40,7 +40,7 @@ class DriftQuarantinePolicyTest {
     @BeforeEach
     fun setUp() {
         policy = MentionTypeDriftQuarantinePolicy()
-        differ = JaversMetamodelDiffer()
+        differ = StructuralMetamodelDiffer()
     }
 
     private fun schemaWith(vararg typeNames: String): DataDictionary =

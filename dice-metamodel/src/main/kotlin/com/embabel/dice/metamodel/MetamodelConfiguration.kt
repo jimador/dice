@@ -15,8 +15,8 @@
  */
 package com.embabel.dice.metamodel
 
-import com.embabel.dice.metamodel.support.JaversMetamodelDiffer
 import com.embabel.dice.metamodel.support.MentionTypeDriftQuarantinePolicy
+import com.embabel.dice.metamodel.support.StructuralMetamodelDiffer
 import org.slf4j.LoggerFactory
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean
@@ -35,12 +35,12 @@ class MetamodelConfiguration {
 
     private val logger = LoggerFactory.getLogger(MetamodelConfiguration::class.java)
 
-    /** A JaVers-backed structural differ, unless the app already defines one. */
+    /** The default structural differ, unless the app already defines one. */
     @Bean
     @ConditionalOnMissingBean(MetamodelDiffer::class)
     fun metamodelDiffer(): MetamodelDiffer {
-        logger.debug("Registering default MetamodelDiffer: JaversMetamodelDiffer")
-        return JaversMetamodelDiffer()
+        logger.debug("Registering default MetamodelDiffer: StructuralMetamodelDiffer")
+        return StructuralMetamodelDiffer()
     }
 
     /** The mention-type drift quarantine policy, unless the app already defines one. */

@@ -57,6 +57,11 @@ data class MetamodelVersion(
 
     companion object {
 
+        /** Append [token] length-prefixed (`<len>:<token>`) so concatenation can't be ambiguous. */
+        private fun StringBuilder.appendSized(token: String) {
+            append(token.length).append(':').append(token)
+        }
+
         /**
          * Create a [MetamodelVersion] stamp from the given [DataDictionary].
          *
@@ -90,21 +95,27 @@ data class MetamodelVersion(
                 .map { rel -> "${rel.from.name}-[${rel.name}]->${rel.to.name}" }
                 .sorted()
 
+            // Build a collision-free fingerprint by length-prefixing every name, label, and property
+            // (and counting each set) before hashing. A plain delimiter-joined encoding isn't safe
+            // here: these names come from free-text / LLM extraction and routinely contain ';', '[',
+            // '=' and spaces, so joining with those characters could make ["a;b"] and ["a", "b"] hash
+            // identically and hide a real, lossy schema change. Length-prefixing makes the encoding
+            // unambiguous, so distinct content always yields a distinct hash.
+            // Schema name is deliberately excluded: two structurally identical schemas must produce
+            // the same hash even when named differently (e.g. dev vs prod environments).
             val hashInput = buildString {
-                append("|types:")
-                // Each type contributes its name, its sorted label set, and its sorted property-name
-                // set, so a label-only or property-only change (same name) yields a different hash.
-                // Schema name is deliberately excluded: two structurally identical schemas must
-                // produce the same hash even when named differently (e.g. dev vs prod environments).
+                append("types:").append(entityTypeNames.size).append('|')
                 entityTypeNames.forEach { name ->
-                    append(name).append("=labels[")
-                    entityTypeLabels[name].orEmpty().sorted().forEach { append(it).append(';') }
-                    append("]props[")
-                    entityTypeProperties[name].orEmpty().sorted().forEach { append(it).append(';') }
-                    append("],")
+                    appendSized(name)
+                    val labels = entityTypeLabels[name].orEmpty().sorted()
+                    append("labels:").append(labels.size).append('|')
+                    labels.forEach { appendSized(it) }
+                    val props = entityTypeProperties[name].orEmpty().sorted()
+                    append("props:").append(props.size).append('|')
+                    props.forEach { appendSized(it) }
                 }
-                append("|rels:")
-                relationshipNames.forEach { append(it).append(',') }
+                append("rels:").append(relationshipNames.size).append('|')
+                relationshipNames.forEach { appendSized(it) }
             }
 
             val digest = MessageDigest.getInstance("SHA-256")

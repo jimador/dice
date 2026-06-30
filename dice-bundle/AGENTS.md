@@ -69,10 +69,10 @@ when (outcome) {
 - **Integer vs Long in `hints`.** Jackson deserialises JSON integer values inside a
   `Map<String, Any>` as `java.lang.Integer` (not `Long`), regardless of how they were created.
   Cast through `Number.toInt()` / `Number.toLong()` rather than direct casting if portability matters.
-- **50 MB string guard applies only to `importFromString`.** The `importFromStream` and
-  `importFromReader` paths in `JacksonKnowledgeBundleImporter` stream directly through Jackson
-  without the byte-length check. Apply your own size limit at the transport layer when reading
-  from untrusted streams.
+- **50 MB size guard applies to all three import paths.** `importFromString` checks the UTF-8
+  byte length up front; `importFromStream` and `importFromReader` wrap the source so the read is
+  aborted once `maxBundleBytes` is exceeded (the reader path sums UTF-8 byte lengths, not
+  characters). All three return `BundleImportOutcome.ParseFailure` when the limit is exceeded.
 - **Format version gate is pre-write.** `UnknownFormatVersion` and `ParseFailure` are always
   clean no-ops — no propositions are written to the store before the format check passes.
 - **No Spring auto-configuration.** The module ships no `@Configuration` class. Wire

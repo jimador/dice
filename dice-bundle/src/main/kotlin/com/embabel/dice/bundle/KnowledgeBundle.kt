@@ -65,6 +65,10 @@ data class KnowledgeBundle(
          * `==` unless you supply the same [createdAt] value to both — [KnowledgeBundle] is
          * a data class and [createdAt] participates in structural equality.
          *
+         * Every proposition must belong to [contextId]; a bundle must not carry facts from any
+         * other context. This is rejected here rather than silently shipped, because a bundle that
+         * mixes contexts would leak one context's facts into another on import.
+         *
          * @param contextId The source context.
          * @param propositions The propositions to include; duplicates (by ID) are preserved
          *   as supplied — deduplication is the caller's responsibility.
@@ -73,6 +77,7 @@ data class KnowledgeBundle(
          *   when deterministic equality across two bundles from the same data is required
          *   (e.g. caching or idempotency checks).
          * @return A new [KnowledgeBundle] stamped with [createdAt].
+         * @throws IllegalArgumentException if any proposition belongs to a context other than [contextId].
          */
         @JvmStatic
         @JvmOverloads
@@ -81,12 +86,20 @@ data class KnowledgeBundle(
             propositions: List<Proposition>,
             metadata: Map<String, String> = emptyMap(),
             createdAt: Instant = Instant.now(),
-        ): KnowledgeBundle = KnowledgeBundle(
-            contextId = contextId,
-            propositions = propositions,
-            metadata = metadata,
-            createdAt = createdAt,
-        )
+        ): KnowledgeBundle {
+            val foreign = propositions.filter { it.contextId != contextId }
+            require(foreign.isEmpty()) {
+                "All propositions must belong to context '${contextId.value}', but ${foreign.size} " +
+                    "belong to another context (e.g. '${foreign.first().contextId.value}'). " +
+                    "A bundle must not carry facts from a context other than its own."
+            }
+            return KnowledgeBundle(
+                contextId = contextId,
+                propositions = propositions,
+                metadata = metadata,
+                createdAt = createdAt,
+            )
+        }
 
         /**
          * Java-friendly overload accepting the context ID as a plain string.
