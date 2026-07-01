@@ -105,9 +105,13 @@ open class DrivinePropositionRepository(
                 txTemplate.execute { findOrPersist(proposition, contextId, text) }!!
             } catch (e: RuntimeException) {
                 if (!isUniquenessViolation(e)) throw e
-                // Cross-instance race: another writer inserted the same (contextId, text) and the DB
-                // (contextId, text) uniqueness constraint rejected ours. The dupe now exists — reuse it.
-                logger.debug("Dedup constraint hit for context {} — reusing existing: '{}'", contextId, text)
+                // The only uniqueness constraint on Proposition is @Unique(id), so a violation here
+                // means the same id was inserted concurrently (this proposition re-saved from another
+                // thread or instance). Best effort: if a row with the same (contextId, text) is now
+                // visible, reuse it; otherwise rethrow. There is no DB (contextId, text) constraint —
+                // that dedup comes only from the in-JVM stripe lock above and does not hold across
+                // instances.
+                logger.debug("Uniqueness violation on save for context {} — reusing existing if present: '{}'", contextId, text)
                 txTemplate.execute { findDuplicateId(contextId, text, proposition.id)?.let(::findById) } ?: throw e
             }
         }
@@ -130,8 +134,8 @@ open class DrivinePropositionRepository(
                 txTemplate.execute { if (findById(proposition.id) != null) null else doPersist(proposition) }
             } catch (e: RuntimeException) {
                 if (!isUniquenessViolation(e)) throw e
-                // Cross-instance race: another writer already inserted this id (or its (contextId,
-                // text)). It now exists, so this save-if-absent is correctly a no-op.
+                // Cross-instance race: another writer already inserted this id, so the id uniqueness
+                // constraint rejected ours. It now exists, so this save-if-absent is correctly a no-op.
                 logger.debug("saveIfAbsent constraint hit — already present: id={}", proposition.id)
                 null
             }
